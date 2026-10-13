@@ -1,7 +1,5 @@
-use crate::net::records;
-
 use super::{
-    Net,
+    Net, records,
     types::{Behaviour, BehaviourEvent},
 };
 use cid::Cid;
@@ -15,30 +13,82 @@ use libp2p::{
 };
 use multihash_codetable::{Code, MultihashDigest};
 use std::collections::HashSet;
+use std::time::Duration;
 
-fn handle_shared(net: &mut Net, event: SwarmEvent<BehaviourEvent>) {
+fn handle_identify(net: &mut Net, peer_id: libp2p::PeerId, info: identify::Info) {
+    if info
+        .protocols
+        .contains(&StreamProtocol::new(Behaviour::IPFS_KAD_PROTOCOL))
+    {
+        for addr in &info.listen_addrs {
+            net.swarm
+                .behaviour_mut()
+                .ipfs_kad
+                .add_address(&peer_id, addr.clone());
+        }
+    }
+    if info
+        .protocols
+        .contains(&StreamProtocol::new(Behaviour::RPWS_KAD_PROTOCOL))
+    {
+        for addr in &info.listen_addrs {
+            net.swarm
+                .behaviour_mut()
+                .rpws_kad
+                .add_address(&peer_id, addr.clone());
+        }
+    }
+    if info
+        .protocols
+        .contains(&StreamProtocol::new(super::relays::HOP_PROTOCOL))
+        && let Some(relays) = &mut net.relays
+    {
+        relays.discover(peer_id, &info.listen_addrs);
+        relays.reserve(&mut net.swarm);
+    }
+}
+
+fn refresh_provider(net: &mut Net) {
+    if let Some(key) = &net.provider_key
+        && let Err(error) = net
+            .swarm
+            .behaviour_mut()
+            .ipfs_kad
+            .start_providing(key.clone())
+    {
+        tracing::warn!("Failed to advertise provider: {error}");
+    }
+}
+
+pub(super) fn handle_shared(net: &mut Net, event: SwarmEvent<BehaviourEvent>) {
     match event {
+        SwarmEvent::ConnectionEstablished {
+            peer_id,
+            endpoint: libp2p::core::ConnectedPoint::Dialer { address, .. },
+            ..
+        } if !address
+            .iter()
+            .any(|p| matches!(p, libp2p::multiaddr::Protocol::P2pCircuit)) =>
+        {
+            if let Some(relays) = &mut net.relays {
+                relays.connected(peer_id, address);
+            }
+        }
         SwarmEvent::NewListenAddr { address, .. } => tracing::info!("Listening on {}", address),
         SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received {
             peer_id,
-            info:
-                identify::Info {
-                    listen_addrs,
-                    protocols,
-                    ..
-                },
+            info,
             ..
         })) => {
-            tracing::trace!("Connected to {}", peer_id);
-
-            if protocols.contains(&StreamProtocol::new(Behaviour::IPFS_KAD_PROTOCOL)) {
-                for addr in listen_addrs.clone() {
-                    net.swarm
-                        .behaviour_mut()
-                        .ipfs_kad
-                        .add_address(&peer_id, addr);
-                }
-            }
+            handle_identify(net, peer_id, info);
+        }
+        SwarmEvent::ExternalAddrConfirmed { address } => {
+            tracing::info!("Confirmed external address {address}");
+            refresh_provider(net);
+        }
+        SwarmEvent::ExternalAddrExpired { address } => {
+            tracing::info!("External address expired: {address}");
+            refresh_provider(net);
         }
         SwarmEvent::Behaviour(BehaviourEvent::Dcutr(ev)) => match ev.result {
             Ok(_) => tracing::debug!("Hole-punched {}", ev.remote_peer_id),
@@ -82,7 +132,7 @@ fn handle_shared(net: &mut Net, event: SwarmEvent<BehaviourEvent>) {
             ),
         },
         SwarmEvent::Behaviour(BehaviourEvent::RelayClient(ev)) => {
-            tracing::info!("Relay client event: {ev:?}");
+            tracing::trace!("Relay client event: {ev:?}");
         }
         SwarmEvent::ListenerError { listener_id, error } => {
             tracing::warn!("Listener {listener_id:?} error: {error}");
@@ -95,7 +145,33 @@ fn handle_shared(net: &mut Net, event: SwarmEvent<BehaviourEvent>) {
             tracing::warn!(
                 "Listener {listener_id:?} closed; addresses: {addresses:?}; reason: {reason:?}"
             );
+            if let Some(relays) = &mut net.relays {
+                relays.listener_closed(listener_id);
+                relays.reserve(&mut net.swarm);
+            }
         }
+        SwarmEvent::Behaviour(BehaviourEvent::IpfsKad(kad::Event::OutboundQueryProgressed {
+            result,
+            ..
+        })) => match result {
+            kad::QueryResult::GetProviders(Ok(kad::GetProvidersOk::FoundProviders {
+                providers,
+                ..
+            })) => {
+                for peer in providers {
+                    if peer != *net.swarm.local_peer_id()
+                        && !net.swarm.is_connected(&peer)
+                        && let Err(error) = net.swarm.dial(peer)
+                    {
+                        tracing::debug!("Cannot dial provider {peer}: {error}");
+                    }
+                }
+            }
+            kad::QueryResult::StartProviding(Ok(_)) => {
+                tracing::info!("Provider advertisement completed")
+            }
+            result => tracing::debug!("Kad query result: {result:?}"),
+        },
         SwarmEvent::Behaviour(BehaviourEvent::IpfsKad(kad::Event::InboundRequest {
             request: kad::InboundRequest::AddProvider { record: Some(r) },
         })) => {
@@ -156,6 +232,7 @@ pub async fn bootstrap<B: AsRef<[u8]>>(net: &mut Net, of: B) -> color_eyre::Resu
     let mh = Code::Blake3_256.digest(of.as_ref());
     let cid = Cid::new_v1(Net::BOOTSTRAP_CODEC, mh);
     let key = kad::RecordKey::new(&cid.hash().to_bytes());
+    net.provider_key = Some(key.clone());
 
     tracing::info!("Bootstrapping for {}", cid);
 
@@ -172,12 +249,7 @@ pub async fn bootstrap<B: AsRef<[u8]>>(net: &mut Net, of: B) -> color_eyre::Resu
         match net.swarm.select_next_some().await {
             SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received {
                 peer_id,
-                info:
-                    identify::Info {
-                        listen_addrs,
-                        protocols,
-                        ..
-                    },
+                info,
                 ..
             })) => {
                 tracing::trace!("Connected to {}", peer_id);
@@ -186,22 +258,7 @@ pub async fn bootstrap<B: AsRef<[u8]>>(net: &mut Net, of: B) -> color_eyre::Resu
                     connected.insert(peer_id);
                 }
 
-                if protocols.contains(&StreamProtocol::new(Behaviour::IPFS_KAD_PROTOCOL)) {
-                    for addr in listen_addrs.clone() {
-                        net.swarm
-                            .behaviour_mut()
-                            .ipfs_kad
-                            .add_address(&peer_id, addr);
-                    }
-                }
-                if protocols.contains(&StreamProtocol::new(Behaviour::RPWS_KAD_PROTOCOL)) {
-                    for addr in listen_addrs {
-                        net.swarm
-                            .behaviour_mut()
-                            .rpws_kad
-                            .add_address(&peer_id, addr);
-                    }
-                }
+                handle_identify(net, peer_id, info);
             }
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
                 if let Some(id) = peer_id
@@ -257,8 +314,10 @@ pub async fn bootstrap<B: AsRef<[u8]>>(net: &mut Net, of: B) -> color_eyre::Resu
                     tracing::warn!("IPFS bootstrap error: {e:?}")
                 }
                 kad::QueryResult::StartProviding(Ok(_)) => {
-                    _ = lid.take();
                     tracing::info!("Providing {cid}");
+                    if lid == Some(id) {
+                        break;
+                    }
                 }
                 kad::QueryResult::StartProviding(Err(e)) => {
                     _ = lid.take();
@@ -330,10 +389,20 @@ pub async fn bootstrap<B: AsRef<[u8]>>(net: &mut Net, of: B) -> color_eyre::Resu
     Ok(())
 }
 
-pub async fn run(net: &mut Net) -> color_eyre::Result<()> {
+pub async fn run(mut net: Net) -> color_eyre::Result<()> {
+    let mut maintenance = tokio::time::interval(Duration::from_secs(30));
+    maintenance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
-        match net.swarm.select_next_some().await {
-            ev => handle_shared(net, ev),
+        tokio::select! {
+            ev = net.swarm.select_next_some() => handle_shared(&mut net, ev),
+            _ = maintenance.tick() => {
+                if let Some(relays) = &mut net.relays {
+                    relays.reserve(&mut net.swarm);
+                }
+                if let Some(key) = &net.provider_key {
+                    net.swarm.behaviour_mut().ipfs_kad.get_providers(key.clone());
+                }
+            }
         }
     }
 }

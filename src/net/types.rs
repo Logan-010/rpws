@@ -1,16 +1,22 @@
+use std::collections::HashSet;
+
 use crate::{
     config::Config,
-    net::{swarm, tasks},
+    net::{relays::Relays, swarm, tasks},
 };
 use libp2p::{
-    Multiaddr, StreamProtocol, Swarm, autonat, dcutr, identify, identity::Keypair, kad, mdns,
-    multiaddr::Protocol, ping, relay, swarm::NetworkBehaviour,
+    Multiaddr, PeerId, StreamProtocol, Swarm, autonat, dcutr, identify, identity::Keypair, kad,
+    mdns, multiaddr::Protocol, ping, relay, swarm::NetworkBehaviour,
 };
 use redb::Database;
 
 pub struct Net {
     pub(super) swarm: Swarm<Behaviour>,
+    pub(super) relays: Option<Relays>,
+    pub(super) provider_key: Option<kad::RecordKey>,
 }
+
+pub struct NetApi {}
 
 impl Net {
     pub const BOOTSTRAP_CODEC: u64 = 0x77;
@@ -26,7 +32,11 @@ impl Net {
     pub async fn new(config: &Config) -> color_eyre::Result<Self> {
         let swarm = swarm::build_swarm(config).await?;
 
-        Ok(Self { swarm })
+        Ok(Self {
+            swarm,
+            relays: None,
+            provider_key: None,
+        })
     }
 
     pub async fn bootstrap<B: AsRef<[u8]>>(
@@ -35,6 +45,7 @@ impl Net {
         of: B,
     ) -> color_eyre::Result<()> {
         if !local {
+            self.relays = Some(Relays::default());
             let base_addr = Self::BOOTSTRAP_ADDR
                 .parse::<Multiaddr>()
                 .expect("Valid address");
@@ -54,7 +65,59 @@ impl Net {
         tasks::bootstrap(self, of).await
     }
 
-    pub async fn run(&mut self) -> color_eyre::Result<()> {
+    pub fn cleanup(&mut self) {
+        let rpws_peers: HashSet<PeerId> = self
+            .swarm
+            .behaviour_mut()
+            .rpws_kad
+            .kbuckets()
+            .flat_map(|bucket| {
+                bucket
+                    .iter()
+                    .map(|entry| *entry.node.key.preimage())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        let ipfs_peers: Vec<PeerId> = self
+            .swarm
+            .behaviour_mut()
+            .ipfs_kad
+            .kbuckets()
+            .flat_map(|bucket| {
+                bucket
+                    .iter()
+                    .map(|entry| *entry.node.key.preimage())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        for peer in &ipfs_peers {
+            self.swarm.behaviour_mut().ipfs_kad.remove_peer(peer);
+        }
+
+        let local_peer_id = *self.swarm.local_peer_id();
+
+        *self.swarm.behaviour_mut().ipfs_kad.store_mut() =
+            kad::store::MemoryStore::new(local_peer_id);
+
+        let disconnect_peers: Vec<PeerId> = self
+            .swarm
+            .connected_peers()
+            .filter(|peer| !rpws_peers.contains(peer))
+            .copied()
+            .collect();
+
+        for peer in disconnect_peers {
+            let _ = self.swarm.disconnect_peer_id(peer);
+        }
+    }
+
+    pub fn api(&mut self) -> NetApi {
+        NetApi {}
+    }
+
+    pub async fn run(self) -> color_eyre::Result<()> {
         tasks::run(self).await
     }
 }
@@ -83,10 +146,10 @@ impl Behaviour {
     ) -> Result<Self, std::io::Error> {
         Ok(Self {
             ping: ping::Behaviour::new(ping::Config::new()),
-            identify: identify::Behaviour::new(identify::Config::new(
-                String::from(Self::CLIENT_PROTOCOL),
-                keypair.public(),
-            )),
+            identify: identify::Behaviour::new(
+                identify::Config::new(String::from(Self::CLIENT_PROTOCOL), keypair.public())
+                    .with_push_listen_addr_updates(true),
+            ),
             ipfs_kad: kad::Behaviour::with_config(
                 keypair.public().to_peer_id(),
                 kad::store::MemoryStore::new(keypair.public().to_peer_id()),

@@ -9,7 +9,7 @@ use color_eyre::eyre::bail;
 use config::Config;
 use directories::ProjectDirs;
 use net::Net;
-use tokio::{fs, select, signal};
+use tokio::{fs, select, signal, task};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -57,8 +57,15 @@ async fn main() -> color_eyre::Result<()> {
     let mut net = Net::new(&config).await?;
 
     net.bootstrap(cli.local, config.secret().as_bytes()).await?;
+    net.cleanup();
 
     if !cli.headless {
+        let api = net.api();
+        let task = task::spawn(net.run());
+
+        ui::run(api)?;
+
+        task.abort();
     } else {
         select! {
             exit_res = signal::ctrl_c() => exit_res?,
