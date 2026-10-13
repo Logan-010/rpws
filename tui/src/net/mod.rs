@@ -1,6 +1,8 @@
 mod types;
+pub use types::Net;
 use types::*;
-pub use types::{Net, NetApi};
+
+pub mod api;
 
 mod records;
 mod relays;

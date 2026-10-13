@@ -1,10 +1,21 @@
-identity = "CAESQHmAQDx6fKKFTudGhcMdjMnFY+c5w6peo6c9R8AV0+rB1Sk3pDShR9X0xNk5QhcbjyB1hntYpgmPUTqljiBPWDE="
-secret = "yo bro..."
+identity = "CAESQHsfcy+ag3Efaivx5/TqmFKZiuyH+H/UoTB2jDQuFFJ90QPFicABabM1iKbDD+OpiY6fPUob5MTlCMY3NOzdxio="
+secret = "yzeiw2S3MPGVahKuLA3d68GKCc83uKwBrIVlExD3irI="
+api_addr = "[::1]:7780"
 listen_addrs = [
-    "/ip4/0.0.0.0/tcp/7776",
-    "/ip6/::/tcp/7776",
-    "/ip4/0.0.0.0/udp/7776/quic-v1",
-    "/ip6/::/udp/7776/quic-v1",
+    "/ip4/0.0.0.0/tcp/7779",
+    "/ip6/::/tcp/7779",
+    "/ip4/0.0.0.0/udp/7779/quic-v1",
+    "/ip6/::/udp/7779/quic-v1",
+    "/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN/p2p-circuit",
+    "/dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa/p2p-circuit",
+    "/dnsaddr/bootstrap.libp2p.io/p2p/QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb/p2p-circuit",
+    "/dnsaddr/bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt/p2p-circuit",
+]
+bootstrap_addrs = [
+    "/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
+    "/dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
+    "/dnsaddr/bootstrap.libp2p.io/p2p/QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
+    "/dnsaddr/bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
 ]
 external_addrs = []
 kademlia_store_path = "/home/seedse/.local/share/rpws/kad2.redb"

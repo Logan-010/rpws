@@ -1,6 +1,7 @@
 use super::Behaviour;
 use crate::config::Config;
-use libp2p::{Swarm, SwarmBuilder, kad, noise, tcp, yamux};
+use color_eyre::eyre::bail;
+use libp2p::{Swarm, SwarmBuilder, kad, multiaddr::Protocol, noise, tcp, yamux};
 use redb::Database;
 use std::time::Duration;
 use tokio::{fs, task};
@@ -30,6 +31,8 @@ pub async fn build_swarm(config: &Config) -> color_eyre::Result<Swarm<Behaviour>
         )?
         .with_quic()
         .with_dns()?
+        .with_websocket(noise::Config::new, yamux::Config::default)
+        .await?
         .with_relay_client(noise::Config::new, yamux::Config::default)?
         .with_behaviour(|keypair, relay_client| {
             Ok(Behaviour::new(keypair, relay_client, database)?)
@@ -54,6 +57,14 @@ pub async fn build_swarm(config: &Config) -> color_eyre::Result<Swarm<Behaviour>
     for addr in config.external_addrs() {
         tracing::debug!("Adding external address {addr}");
         swarm.add_external_address(addr.clone());
+    }
+
+    for mut addr in config.bootstrap_addrs().iter().cloned() {
+        let Some(Protocol::P2p(id)) = addr.pop() else {
+            bail!("Bootstrap address must end with /p2p");
+        };
+
+        swarm.behaviour_mut().ipfs_kad.add_address(&id, addr);
     }
 
     Ok(swarm)

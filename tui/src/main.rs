@@ -4,12 +4,11 @@ mod net;
 mod ui;
 
 use clap::Parser;
-use cli::Cli;
-use color_eyre::eyre::bail;
+use cli::{Cli, Mode};
 use config::Config;
 use directories::ProjectDirs;
-use net::Net;
-use tokio::{fs, select, signal, task};
+use net::{Net, api::NetApi};
+use tokio::{fs, pin, select, signal, task};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -17,20 +16,10 @@ async fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
 
     let cli = Cli::parse();
-    let logs = ui::LogOutput::default();
-    let log_writer = if cli.headless {
-        tracing_subscriber::fmt::writer::BoxMakeWriter::new(std::io::stdout)
-    } else {
-        tracing_subscriber::fmt::writer::BoxMakeWriter::new(logs.clone())
-    };
 
     if let Err(e) = tracing_subscriber::registry()
         .with(EnvFilter::new(&cli.logging))
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_ansi(cli.headless)
-                .with_writer(log_writer),
-        )
+        .with(tracing_subscriber::fmt::layer())
         .try_init()
     {
         eprintln!("Failed to initialize logger: {e:?}");
@@ -60,27 +49,37 @@ async fn main() -> color_eyre::Result<()> {
         c
     };
 
-    if config.secret() == Config::default().secret() {
-        bail!("Change the secret in config ({})!", config_path.display());
-    }
+    match cli.mode {
+        Some(Mode::Daemon { local }) => {
+            let mut net = Net::new(&config).await?;
 
-    let mut net = Net::new(&config).await?;
+            let api = task::spawn(net::api::task(config.api_address()));
+            pin!(api);
 
-    net.bootstrap(cli.local, config.secret().as_bytes()).await?;
-    net.cleanup();
+            tracing::info!("Bootstrapping");
 
-    if !cli.headless {
-        let api = net.api();
-        let task = task::spawn(net.run());
+            select! {
+                bootstrap_res = net.bootstrap(local, config.secret()?) => bootstrap_res?,
+                api_res = &mut api => api_res??,
+            }
 
-        let ui_result = ui::run(api, logs);
-        task.abort();
-        let _ = task.await;
-        ui_result?;
-    } else {
-        select! {
-            exit_res = signal::ctrl_c() => exit_res?,
-            net_res = net.run() => net_res?
+            tracing::info!("Initial bootstrap done");
+
+            select! {
+                exit_res = signal::ctrl_c() => exit_res?,
+                api_res = api => api_res??,
+                net_res = net.run() => net_res?,
+            }
+        }
+        None => {
+            let addr = cli
+                .api_addr
+                .unwrap_or_else(|| format!("http://{}", config.api_address()));
+            let api = NetApi::new(addr);
+
+            api.connect().await?;
+
+            ui::run(api)?;
         }
     }
 

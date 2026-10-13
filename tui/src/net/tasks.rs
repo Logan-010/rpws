@@ -281,7 +281,7 @@ pub(super) fn handle_shared(net: &mut Net, event: SwarmEvent<BehaviourEvent>) {
                     record: Some(r), ..
                 },
         })) => {
-            if records::verify_rpws_record(&r)
+            if records::verify_rpws_record(&r, &net.secret)
                 && let Err(e) = net.swarm.behaviour_mut().rpws_kad.store_mut().put(r)
             {
                 tracing::warn!("Failed to put record: {e:?}");
@@ -574,7 +574,6 @@ mod tests {
             }
             assert!(seeker.swarm.is_connected(&peer));
             assert!(seeker.swarm.behaviour_mut().rpws_kad.kbuckets().any(|bucket| bucket.iter().any(|entry| entry.node.key.preimage() == &peer)));
-            seeker.cleanup();
             assert!(seeker.provider_key.is_none());
             assert!(seeker.swarm.behaviour_mut().ipfs_kad.kbuckets().all(|bucket| bucket.is_empty()));
             assert!(seeker.swarm.is_connected(&peer));
@@ -621,7 +620,6 @@ mod tests {
                     }
                 }
             };
-            client.cleanup();
             assert!(client.swarm.is_connected(&relay_peer));
             let dialer_directory = tempfile::tempdir().unwrap();
             let mut dialer = net(&dialer_directory).await;

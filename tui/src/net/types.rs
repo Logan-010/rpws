@@ -1,22 +1,19 @@
-use std::collections::HashSet;
-
 use crate::{
     config::Config,
     net::{relays::Relays, swarm, tasks},
 };
 use libp2p::{
-    Multiaddr, PeerId, StreamProtocol, Swarm, autonat, dcutr, identify, identity::Keypair, kad,
-    mdns, multiaddr::Protocol, ping, relay, swarm::NetworkBehaviour,
+    Multiaddr, StreamProtocol, Swarm, autonat, dcutr, identify, identity::Keypair, kad, mdns,
+    multiaddr::Protocol, ping, relay, swarm::NetworkBehaviour,
 };
 use redb::Database;
 
 pub struct Net {
     pub(super) swarm: Swarm<Behaviour>,
+    pub(super) secret: [u8; 32],
     pub(super) relays: Option<Relays>,
     pub(super) provider_key: Option<kad::RecordKey>,
 }
-
-pub struct NetApi {}
 
 impl Net {
     pub const BOOTSTRAP_CODEC: u64 = 0x77;
@@ -34,6 +31,7 @@ impl Net {
 
         Ok(Self {
             swarm,
+            secret: shared::derive_key(config.secret()?),
             relays: None,
             provider_key: None,
         })
@@ -63,69 +61,6 @@ impl Net {
         }
 
         tasks::bootstrap(self, of).await
-    }
-
-    pub fn cleanup(&mut self) {
-        // Rendezvous discovery is complete; do not restart IPFS provider queries.
-        self.provider_key = None;
-        for mut query in self.swarm.behaviour_mut().ipfs_kad.iter_queries_mut() {
-            query.finish();
-        }
-        let rpws_peers: HashSet<PeerId> = self
-            .swarm
-            .behaviour_mut()
-            .rpws_kad
-            .kbuckets()
-            .flat_map(|bucket| {
-                bucket
-                    .iter()
-                    .map(|entry| *entry.node.key.preimage())
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-
-        let ipfs_peers: Vec<PeerId> = self
-            .swarm
-            .behaviour_mut()
-            .ipfs_kad
-            .kbuckets()
-            .flat_map(|bucket| {
-                bucket
-                    .iter()
-                    .map(|entry| *entry.node.key.preimage())
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-
-        for peer in &ipfs_peers {
-            self.swarm.behaviour_mut().ipfs_kad.remove_peer(peer);
-        }
-
-        let local_peer_id = *self.swarm.local_peer_id();
-
-        *self.swarm.behaviour_mut().ipfs_kad.store_mut() =
-            kad::store::MemoryStore::new(local_peer_id);
-
-        let disconnect_peers: Vec<PeerId> = self
-            .swarm
-            .connected_peers()
-            .filter(|peer| {
-                !rpws_peers.contains(peer)
-                    && !self
-                        .relays
-                        .as_ref()
-                        .is_some_and(|relays| relays.has_reservation(peer))
-            })
-            .copied()
-            .collect();
-
-        for peer in disconnect_peers {
-            let _ = self.swarm.disconnect_peer_id(peer);
-        }
-    }
-
-    pub fn api(&mut self) -> NetApi {
-        NetApi {}
     }
 
     pub async fn run(self) -> color_eyre::Result<()> {

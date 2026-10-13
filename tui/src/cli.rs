@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Clone, Parser)]
@@ -15,11 +15,20 @@ pub struct Cli {
     #[arg(long, short = 'c', env = "RPWS_CONFIG")]
     pub config: Option<PathBuf>,
 
-    /// Run in headless mode (no UI, useful for servers/backups)
-    #[arg(long, short = 'H')]
-    pub headless: bool,
+    /// Overide API address
+    #[arg(long, short = 'a', env = "API_ADDR")]
+    pub api_addr: Option<String>,
 
-    /// Don't connect to global IPFS DHT
-    #[arg(long, short = 'l')]
-    pub local: bool,
+    #[clap(subcommand)]
+    pub mode: Option<Mode>,
+}
+
+#[derive(Subcommand, Clone)]
+pub enum Mode {
+    /// Launch daemon
+    Daemon {
+        /// Don't connect to global IPFS DHT (good for local testing)
+        #[arg(long, short = 'l')]
+        local: bool,
+    },
 }

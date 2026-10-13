@@ -1,10 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["libp2p-kad-redb", "tui"]
+members = ["libp2p-kad-redb", "shared", "tui"]
 
 [workspace.dependencies]
 # Internal
 libp2p-kad-redb = { path = "libp2p-kad-redb" }
+shared = { path = "shared" }
 
 # Locked
 redb = "4.3.0"
