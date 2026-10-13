@@ -32,7 +32,12 @@
           inherit system;
         };
 
-        toolchain = fenix.packages.${system}.latest.toolchain;
+        toolchain =
+          with fenix.packages.${system};
+          combine [
+            latest.toolchain
+            targets.wasm32-unknown-unknown.latest.rust-std
+          ];
 
         naersk-lib = pkgs.callPackage naersk {
           cargo = toolchain;
@@ -41,7 +46,7 @@
       in
       {
         packages.default = naersk-lib.buildPackage {
-          src = ./.;
+          src = ./app;
         };
 
         devShells.default = pkgs.mkShell {

@@ -1,0 +1,9 @@
+[package]
+name = "web"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+libp2p = { version = "0.57.0", features = ["dns", "identify", "kad", "ping", "websocket"] }
+shared = { workspace = true }
+wasm-bindgen = "0.2.108"
