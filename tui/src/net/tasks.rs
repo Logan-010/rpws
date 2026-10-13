@@ -1,5 +1,6 @@
 use super::{
     Net, records,
+    requests::Requests,
     types::{Behaviour, BehaviourEvent},
 };
 use cid::Cid;
@@ -212,29 +213,6 @@ pub(super) fn handle_shared(net: &mut Net, event: SwarmEvent<BehaviourEvent>) {
                 relays.reserve(&mut net.swarm);
             }
         }
-        SwarmEvent::Behaviour(BehaviourEvent::IpfsKad(kad::Event::OutboundQueryProgressed {
-            result,
-            ..
-        })) => match result {
-            kad::QueryResult::GetProviders(Ok(kad::GetProvidersOk::FoundProviders {
-                key,
-                providers,
-                ..
-            })) if net.provider_key.as_ref() == Some(&key) => {
-                for peer in providers {
-                    if peer != *net.swarm.local_peer_id()
-                        && !net.swarm.is_connected(&peer)
-                        && let Err(error) = net.swarm.dial(peer)
-                    {
-                        tracing::debug!("Cannot dial provider {peer}: {error}");
-                    }
-                }
-            }
-            kad::QueryResult::StartProviding(Ok(_)) => {
-                tracing::info!("Provider advertisement completed")
-            }
-            result => tracing::debug!("Kad query result: {result:?}"),
-        },
         SwarmEvent::Behaviour(BehaviourEvent::IpfsKad(kad::Event::InboundRequest {
             request: kad::InboundRequest::AddProvider { record: Some(r) },
         })) => {
@@ -291,20 +269,17 @@ pub(super) fn handle_shared(net: &mut Net, event: SwarmEvent<BehaviourEvent>) {
     }
 }
 
-pub async fn bootstrap<B: AsRef<[u8]>>(net: &mut Net, of: B) -> color_eyre::Result<()> {
+pub async fn run<B: AsRef<[u8]>>(net: &mut Net, of: B) -> color_eyre::Result<()> {
     let mh = Code::Blake3_256.digest(of.as_ref());
     let cid = Cid::new_v1(Net::BOOTSTRAP_CODEC, mh);
     let key = kad::RecordKey::new(&cid.hash().to_bytes());
     net.provider_key = Some(key.clone());
 
-    tracing::info!("Bootstrapping for {}", cid);
+    tracing::info!("Running network for {}", cid);
 
     let mut qid = None;
-    let mut lid = None;
-    let mut connected = HashSet::new();
+    let mut requests = Requests::default();
     let mut connecting = HashSet::new();
-    let mut identified = HashSet::new();
-    let mut rpws_peers = HashSet::new();
     let mut retries = ProviderRetries::default();
     let mut search_started = false;
     let mut next_search = Instant::now();
@@ -312,13 +287,14 @@ pub async fn bootstrap<B: AsRef<[u8]>>(net: &mut Net, of: B) -> color_eyre::Resu
     maintenance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
-        if !connected.is_empty() && connecting.is_empty() {
-            break;
-        }
-
         let event = tokio::select! {
             event = net.swarm.select_next_some() => event,
+            Some(request) = net.requests.recv() => {
+                requests.handle(net, request);
+                continue;
+            }
             _ = maintenance.tick() => {
+                requests.maintain(net);
                 if search_started && qid.is_none() && Instant::now() >= next_search {
                     qid = Some(find_providers(net, &key));
                 }
@@ -327,23 +303,17 @@ pub async fn bootstrap<B: AsRef<[u8]>>(net: &mut Net, of: B) -> color_eyre::Resu
             }
         };
         match event {
+            SwarmEvent::Behaviour(BehaviourEvent::RpwsKad(
+                kad::Event::OutboundQueryProgressed {
+                    id, result, step, ..
+                },
+            )) => requests.progressed(net, id, result, step.last),
             SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received {
                 peer_id,
                 info,
                 ..
             })) => {
-                tracing::trace!("Connected to {}", peer_id);
-                identified.insert(peer_id);
-                let supports_rpws = info
-                    .protocols
-                    .contains(&StreamProtocol::new(Behaviour::RPWS_KAD_PROTOCOL));
-                if supports_rpws {
-                    rpws_peers.insert(peer_id);
-                }
-                if connecting.remove(&peer_id) && supports_rpws {
-                    connected.insert(peer_id);
-                }
-
+                connecting.remove(&peer_id);
                 handle_identify(net, peer_id, info);
             }
             SwarmEvent::ConnectionClosed {
@@ -351,9 +321,6 @@ pub async fn bootstrap<B: AsRef<[u8]>>(net: &mut Net, of: B) -> color_eyre::Resu
                 num_established: 0,
                 ..
             } => {
-                connected.remove(&peer_id);
-                identified.remove(&peer_id);
-                rpws_peers.remove(&peer_id);
                 if connecting.remove(&peer_id) {
                     retries.failed(peer_id, Instant::now());
                 }
@@ -382,12 +349,7 @@ pub async fn bootstrap<B: AsRef<[u8]>>(net: &mut Net, of: B) -> color_eyre::Resu
                     {
                         qid = Some(find_providers(net, &key));
                         search_started = true;
-                        lid = Some(
-                            net.swarm
-                                .behaviour_mut()
-                                .ipfs_kad
-                                .start_providing(key.clone())?,
-                        );
+                        refresh_provider(net);
                     }
                 }
                 kad::QueryResult::Bootstrap(Err(e)) => {
@@ -395,19 +357,10 @@ pub async fn bootstrap<B: AsRef<[u8]>>(net: &mut Net, of: B) -> color_eyre::Resu
                 }
                 kad::QueryResult::StartProviding(Ok(_)) => {
                     tracing::info!("Providing {cid}");
-                    if lid == Some(id) {
-                        lid = None;
-                    }
                 }
                 kad::QueryResult::StartProviding(Err(e)) => {
-                    _ = lid.take();
                     tracing::warn!("Failed to provide {cid}: {e:?}, retrying...");
-                    lid = Some(
-                        net.swarm
-                            .behaviour_mut()
-                            .ipfs_kad
-                            .start_providing(key.clone())?,
-                    );
+                    refresh_provider(net);
                 }
                 kad::QueryResult::GetProviders(Ok(
                     kad::GetProvidersOk::FinishedWithNoAdditionalRecord { .. },
@@ -440,14 +393,10 @@ pub async fn bootstrap<B: AsRef<[u8]>>(net: &mut Net, of: B) -> color_eyre::Resu
                         if p == *net.swarm.local_peer_id() {
                             continue;
                         }
-                        if net.swarm.is_connected(&p) {
-                            if rpws_peers.contains(&p) {
-                                connecting.remove(&p);
-                                connected.insert(p);
-                            } else if !identified.contains(&p) {
-                                connecting.insert(p);
-                            }
-                        } else if !connecting.contains(&p) && retries.ready(&p, Instant::now()) {
+                        if !net.swarm.is_connected(&p)
+                            && !connecting.contains(&p)
+                            && retries.ready(&p, Instant::now())
+                        {
                             tracing::info!("Found provider {p} for {cid}; dialing");
                             tracing::debug!("Dialing peer {p}");
                             if let Err(e) = net.swarm.dial(p) {
@@ -469,26 +418,6 @@ pub async fn bootstrap<B: AsRef<[u8]>>(net: &mut Net, of: B) -> color_eyre::Resu
                 res => tracing::debug!("Kad query result: {res:?}"),
             },
             ev => handle_shared(net, ev),
-        }
-    }
-
-    Ok(())
-}
-
-pub async fn run(mut net: Net) -> color_eyre::Result<()> {
-    let mut maintenance = tokio::time::interval(Duration::from_secs(30));
-    maintenance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    loop {
-        tokio::select! {
-            ev = net.swarm.select_next_some() => handle_shared(&mut net, ev),
-            _ = maintenance.tick() => {
-                if let Some(relays) = &mut net.relays {
-                    relays.reserve(&mut net.swarm);
-                }
-                if let Some(key) = net.provider_key.clone() {
-                    find_providers(&mut net, &key);
-                }
-            }
         }
     }
 }
@@ -540,13 +469,132 @@ mod tests {
             toml::Value::String(directory.path().join("kad.redb").to_str().unwrap().into());
         config["listen_addrs"] =
             toml::Value::Array(vec![toml::Value::String("/ip4/127.0.0.1/tcp/0".into())]);
+        config["bootstrap_addrs"] = toml::Value::Array(Vec::new());
         Net::new(&Config::decode(toml::to_string(&config).unwrap()).unwrap())
             .await
             .unwrap()
     }
 
+    fn payload(password: &str) -> shared::RecordPayload {
+        shared::RecordPayload {
+            url: "https://example.com".into(),
+            username: "alice".into(),
+            password: password.into(),
+            timestamp: 1,
+            extra: String::new(),
+        }
+    }
+
     #[tokio::test]
-    async fn bootstrap_finds_remote_provider_before_cleanup() {
+    async fn api_put_get_roundtrip_locally_and_from_remote_peer() {
+        use super::super::api::{self, NetApi};
+        use tokio::net::TcpListener;
+
+        tokio::time::timeout(Duration::from_secs(20), async {
+            let provider_dir = tempfile::tempdir().unwrap();
+            let seeker_dir = tempfile::tempdir().unwrap();
+            let mut provider = net(&provider_dir).await;
+            let mut seeker = net(&seeker_dir).await;
+            seeker.secret = provider.secret;
+            let address = loop {
+                if let SwarmEvent::NewListenAddr { address, .. } =
+                    provider.swarm.select_next_some().await
+                {
+                    break address;
+                }
+            };
+            let name = "example / account ? # ü";
+            let provider_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let seeker_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let provider_api = NetApi::new(format!(
+                "http://{}",
+                provider_listener.local_addr().unwrap()
+            ));
+            let seeker_api =
+                NetApi::new(format!("http://{}", seeker_listener.local_addr().unwrap()));
+            let provider_router = api::build(provider.api());
+            let seeker_router = api::build(seeker.api());
+            let provider_server = async {
+                axum::serve(provider_listener, provider_router)
+                    .await
+                    .unwrap()
+            };
+            let seeker_server =
+                async { axum::serve(seeker_listener, seeker_router).await.unwrap() };
+            tokio::pin!(provider_server, seeker_server);
+
+            tokio::select! {
+                result = provider.run(true, b"api-test") => panic!("provider stopped: {result:?}"),
+                _ = &mut provider_server => panic!("API stopped"),
+                _ = async {
+                    provider_api.connect().await.unwrap();
+                    assert!(provider_api.get("missing").await.unwrap().is_none());
+                    assert!(provider_api.get("").await.is_err());
+                    assert!(provider_api.put("", payload("invalid")).await.is_err());
+                    provider_api.put(name, payload("first")).await.unwrap();
+                    assert_eq!(provider_api.get(name).await.unwrap(), Some(payload("first")));
+                    provider_api.put(name, payload("updated")).await.unwrap();
+                    assert_eq!(provider_api.get(name).await.unwrap(), Some(payload("updated")));
+                } => {},
+            }
+
+            let key = kad::RecordKey::new(&shared::Provider::key(name));
+            let index = provider
+                .swarm
+                .behaviour_mut()
+                .rpws_kad
+                .store_mut()
+                .try_get(&key)
+                .unwrap()
+                .unwrap();
+            let mapping = shared::Provider::decode(index.value).unwrap();
+            let record = provider
+                .swarm
+                .behaviour_mut()
+                .rpws_kad
+                .store_mut()
+                .try_get(&kad::RecordKey::new(mapping.hash()))
+                .unwrap()
+                .unwrap();
+            assert!(
+                shared::Record::decode(record.value)
+                    .unwrap()
+                    .verify(&provider.secret)
+            );
+            assert!(
+                seeker
+                    .swarm
+                    .behaviour_mut()
+                    .rpws_kad
+                    .store_mut()
+                    .try_get(&key)
+                    .unwrap()
+                    .is_none()
+            );
+
+            let peer = *provider.swarm.local_peer_id();
+            seeker
+                .swarm
+                .behaviour_mut()
+                .rpws_kad
+                .add_address(&peer, address);
+            tokio::select! {
+                result = provider.run(true, b"api-test") => panic!("provider stopped: {result:?}"),
+                result = seeker.run(true, b"api-test") => panic!("seeker stopped: {result:?}"),
+                _ = &mut provider_server => panic!("provider API stopped"),
+                _ = &mut seeker_server => panic!("seeker API stopped"),
+                _ = async {
+                    assert_eq!(seeker_api.get(name).await.unwrap(), Some(payload("updated")));
+                    assert!(seeker_api.get("missing").await.unwrap().is_none());
+                } => {},
+            }
+        })
+        .await
+        .expect("API put/get timed out");
+    }
+
+    #[tokio::test]
+    async fn run_keeps_discovering_providers_and_preserves_kad() {
         tokio::time::timeout(Duration::from_secs(20), async {
             let provider_dir = tempfile::tempdir().unwrap();
             let seeker_dir = tempfile::tempdir().unwrap();
@@ -559,24 +607,32 @@ mod tests {
             let peer = *provider.swarm.local_peer_id();
             let secret = b"provider-discovery-regression";
             let key = kad::RecordKey::new(&Code::Blake3_256.digest(secret).to_bytes());
-            provider.swarm.behaviour_mut().ipfs_kad.start_providing(key).unwrap();
+            provider.swarm.behaviour_mut().ipfs_kad.start_providing(key.clone()).unwrap();
             seeker.swarm.behaviour_mut().ipfs_kad.add_address(&peer, address);
             seeker.swarm.behaviour_mut().ipfs_kad.bootstrap().unwrap();
             {
-                let bootstrap = seeker.bootstrap(true, secret);
-                tokio::pin!(bootstrap);
+                let run = seeker.run(true, secret);
+                tokio::pin!(run);
+                let mut searches = 0;
                 loop {
                     tokio::select! {
-                        result = &mut bootstrap => { result.unwrap(); break; },
-                        event = provider.swarm.select_next_some() => handle_shared(&mut provider, event),
+                        result = &mut run => panic!("network loop stopped: {result:?}"),
+                        event = provider.swarm.select_next_some() => {
+                            if matches!(&event, SwarmEvent::Behaviour(BehaviourEvent::IpfsKad(kad::Event::InboundRequest {
+                                request: kad::InboundRequest::GetProvider { .. },
+                            }))) {
+                                searches += 1;
+                            }
+                            handle_shared(&mut provider, event);
+                            if searches >= 2 { break; }
+                        },
                     }
                 }
             }
             assert!(seeker.swarm.is_connected(&peer));
             assert!(seeker.swarm.behaviour_mut().rpws_kad.kbuckets().any(|bucket| bucket.iter().any(|entry| entry.node.key.preimage() == &peer)));
-            assert!(seeker.provider_key.is_none());
-            assert!(seeker.swarm.behaviour_mut().ipfs_kad.kbuckets().all(|bucket| bucket.is_empty()));
-            assert!(seeker.swarm.is_connected(&peer));
+            assert_eq!(seeker.provider_key, Some(key));
+            assert!(seeker.swarm.behaviour_mut().ipfs_kad.kbuckets().any(|bucket| bucket.iter().any(|entry| entry.node.key.preimage() == &peer)));
         }).await.expect("provider lookup and connection timed out");
     }
 
@@ -587,7 +643,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cleanup_keeps_relay_usable_for_inbound_connections() {
+    async fn relay_reservation_allows_inbound_connections() {
         use libp2p::{SwarmBuilder, multiaddr::Protocol, noise, relay, tcp, yamux};
         tokio::time::timeout(Duration::from_secs(20), async {
             let directory = tempfile::tempdir().unwrap();
@@ -638,6 +694,6 @@ mod tests {
                     event = dialer.swarm.select_next_some() => handle_shared(&mut dialer, event),
                 }
             }
-        }).await.expect("relay reservation or inbound connection after cleanup timed out");
+        }).await.expect("relay reservation or inbound connection timed out");
     }
 }

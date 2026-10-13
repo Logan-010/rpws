@@ -1,18 +1,21 @@
 use crate::{
     config::Config,
-    net::{relays::Relays, swarm, tasks},
+    net::{relays::Relays, requests::Request, swarm, tasks},
 };
 use libp2p::{
     Multiaddr, StreamProtocol, Swarm, autonat, dcutr, identify, identity::Keypair, kad, mdns,
     multiaddr::Protocol, ping, relay, swarm::NetworkBehaviour,
 };
 use redb::Database;
+use tokio::sync::mpsc;
 
 pub struct Net {
     pub(super) swarm: Swarm<Behaviour>,
     pub(super) secret: [u8; 32],
     pub(super) relays: Option<Relays>,
     pub(super) provider_key: Option<kad::RecordKey>,
+    api: mpsc::Sender<Request>,
+    pub(super) requests: mpsc::Receiver<Request>,
 }
 
 impl Net {
@@ -28,20 +31,23 @@ impl Net {
 
     pub async fn new(config: &Config) -> color_eyre::Result<Self> {
         let swarm = swarm::build_swarm(config).await?;
+        let (api, requests) = mpsc::channel(32);
 
         Ok(Self {
             swarm,
             secret: shared::derive_key(config.secret()?),
             relays: None,
             provider_key: None,
+            api,
+            requests,
         })
     }
 
-    pub async fn bootstrap<B: AsRef<[u8]>>(
-        &mut self,
-        local: bool,
-        of: B,
-    ) -> color_eyre::Result<()> {
+    pub fn api(&self) -> mpsc::Sender<Request> {
+        self.api.clone()
+    }
+
+    pub async fn run<B: AsRef<[u8]>>(&mut self, local: bool, of: B) -> color_eyre::Result<()> {
         if !local {
             self.relays = Some(Relays::default());
             let base_addr = Self::BOOTSTRAP_ADDR
@@ -60,11 +66,7 @@ impl Net {
             self.swarm.behaviour_mut().ipfs_kad.bootstrap()?;
         }
 
-        tasks::bootstrap(self, of).await
-    }
-
-    pub async fn run(self) -> color_eyre::Result<()> {
-        tasks::run(self).await
+        tasks::run(self, of).await
     }
 }
 

@@ -22,10 +22,6 @@ pub(super) struct Relays {
 }
 
 impl Relays {
-    pub fn has_reservation(&self, peer: &PeerId) -> bool {
-        self.listeners.values().any(|relay| relay == peer)
-    }
-
     pub fn connected(&mut self, peer: PeerId, address: Multiaddr) {
         self.direct_addresses.insert(peer, address);
     }

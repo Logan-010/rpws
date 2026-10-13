@@ -8,7 +8,7 @@ use cli::{Cli, Mode};
 use config::Config;
 use directories::ProjectDirs;
 use net::{Net, api::NetApi};
-use tokio::{fs, pin, select, signal, task};
+use tokio::{fs, select, signal, task};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -53,22 +53,12 @@ async fn main() -> color_eyre::Result<()> {
         Some(Mode::Daemon { local }) => {
             let mut net = Net::new(&config).await?;
 
-            let api = task::spawn(net::api::task(config.api_address()));
-            pin!(api);
-
-            tracing::info!("Bootstrapping");
-
-            select! {
-                bootstrap_res = net.bootstrap(local, config.secret()?) => bootstrap_res?,
-                api_res = &mut api => api_res??,
-            }
-
-            tracing::info!("Initial bootstrap done");
+            let api = task::spawn(net::api::task(config.api_address(), net.api()));
 
             select! {
                 exit_res = signal::ctrl_c() => exit_res?,
                 api_res = api => api_res??,
-                net_res = net.run() => net_res?,
+                net_res = net.run(local, config.secret()?) => net_res?,
             }
         }
         None => {

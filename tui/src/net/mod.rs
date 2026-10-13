@@ -6,5 +6,6 @@ pub mod api;
 
 mod records;
 mod relays;
+mod requests;
 mod swarm;
 mod tasks;
