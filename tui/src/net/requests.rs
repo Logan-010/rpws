@@ -7,6 +7,9 @@ use tokio::sync::oneshot;
 type GetReply = oneshot::Sender<color_eyre::Result<Option<shared::RecordPayload>>>;
 
 pub enum Request {
+    List {
+        reply: oneshot::Sender<color_eyre::Result<HashMap<String, shared::RecordPayload>>>,
+    },
     Get {
         name: String,
         reply: GetReply,
@@ -57,6 +60,10 @@ pub(super) struct Requests(HashMap<kad::QueryId, Query>);
 impl Requests {
     pub fn handle(&mut self, net: &mut Net, request: Request) {
         match request {
+            Request::List { reply } => {
+                let result = Self::list(net);
+                let _ = reply.send(result);
+            }
             Request::Get { name, reply } => {
                 let key = kad::RecordKey::new(&shared::Provider::key(name));
                 let kad = &mut net.swarm.behaviour_mut().rpws_kad;
@@ -84,6 +91,36 @@ impl Requests {
                 let _ = reply.send(result);
             }
         }
+    }
+
+    fn list(net: &mut Net) -> color_eyre::Result<HashMap<String, shared::RecordPayload>> {
+        let records = net
+            .swarm
+            .behaviour_mut()
+            .rpws_kad
+            .store_mut()
+            .try_records()?;
+        let records: HashMap<_, _> = records
+            .into_iter()
+            .map(|entry| (entry.key.clone(), entry))
+            .collect();
+        Ok(records
+            .values()
+            .filter_map(|entry| {
+                let provider = shared::Provider::decode(&entry.value).ok()?;
+                if !provider.verify(entry.key.as_ref(), &net.secret) {
+                    return None;
+                }
+                let name = provider.name(&net.secret)?;
+                let key = kad::RecordKey::new(provider.hash());
+                let entry = records.get(&key)?;
+                let record = shared::Record::decode(&entry.value).ok()?;
+                if entry.key.as_ref() != record.hash() || !record.verify(&net.secret) {
+                    return None;
+                }
+                Some((name, record.payload(&net.secret)?))
+            })
+            .collect())
     }
 
     fn put(net: &mut Net, name: String, payload: shared::RecordPayload) -> color_eyre::Result<()> {

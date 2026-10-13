@@ -76,3 +76,20 @@ pub(super) async fn put(
     .await?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+pub(super) async fn list(
+    State(sender): State<mpsc::Sender<Request>>,
+) -> Result<([(axum::http::HeaderName, &'static str); 1], Vec<u8>), ApiError> {
+    let (reply, response) = oneshot::channel();
+    let payloads = request(sender, Request::List { reply }, response).await?;
+    let body = postcard::to_stdvec(&payloads).map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Could not encode passwords",
+        )
+    })?;
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+        body,
+    ))
+}

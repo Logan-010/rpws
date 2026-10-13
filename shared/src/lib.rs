@@ -24,17 +24,24 @@ pub struct Provider {
     key: Vec<u8>,
     hash: Hash,
     signature: Hash,
+    name: Vec<u8>,
 }
 
 impl Provider {
     pub fn new<D: AsRef<[u8]>>(name: D, record: &Record, secret: &[u8; 32]) -> Self {
-        let key = Self::key(name);
+        let key = Self::key(name.as_ref());
         let hash = record.hash;
-        let signature = Self::sign(&key, &hash, secret);
+        let nonce: [u8; Record::NONCE_LENGTH] = rand::random();
+        let mut name = XChaCha20Poly1305::new(secret.into())
+            .encrypt(&nonce.into(), name.as_ref())
+            .expect("Could not encrypt name");
+        name.extend_from_slice(&nonce);
+        let signature = Self::sign(&key, &hash, &name, secret);
         Self {
             key,
             hash,
             signature,
+            name,
         }
     }
 
@@ -42,9 +49,10 @@ impl Provider {
         Provide::new(name).encode()
     }
 
-    fn sign(key: &[u8], hash: &Hash, secret: &[u8; 32]) -> Hash {
+    fn sign(key: &[u8], hash: &Hash, name: &[u8], secret: &[u8; 32]) -> Hash {
         let mut data = key.to_vec();
         data.extend_from_slice(hash.as_bytes());
+        data.extend_from_slice(name);
         blake3::keyed_hash(secret, &data)
     }
 
@@ -53,15 +61,47 @@ impl Provider {
     }
 
     pub fn decode<D: AsRef<[u8]>>(data: D) -> postcard::Result<Self> {
-        postcard::from_bytes(data.as_ref())
+        #[derive(Deserialize)]
+        struct Mapping {
+            key: Vec<u8>,
+            hash: Hash,
+            signature: Hash,
+        }
+
+        let (mapping, remaining) = postcard::take_from_bytes::<Mapping>(data.as_ref())?;
+        let name = if remaining.is_empty() {
+            Vec::new()
+        } else {
+            postcard::from_bytes(remaining)?
+        };
+        Ok(Self {
+            key: mapping.key,
+            hash: mapping.hash,
+            signature: mapping.signature,
+            name,
+        })
     }
 
     pub fn verify(&self, key: &[u8], secret: &[u8; 32]) -> bool {
-        self.key == key && Self::sign(key, &self.hash, secret) == self.signature
+        self.key == key && Self::sign(key, &self.hash, &self.name, secret) == self.signature
     }
 
     pub fn hash(&self) -> &[u8; 32] {
         self.hash.as_bytes()
+    }
+
+    pub fn name(&self, secret: &[u8; 32]) -> Option<String> {
+        if !self.verify(&self.key, secret) || self.name.len() < Record::NONCE_LENGTH {
+            return None;
+        }
+        let (encrypted, nonce) = self.name.split_at(self.name.len() - Record::NONCE_LENGTH);
+        let mut nonce_bytes = [0; Record::NONCE_LENGTH];
+        nonce_bytes.copy_from_slice(nonce);
+        let name = XChaCha20Poly1305::new(secret.into())
+            .decrypt(&nonce_bytes.into(), encrypted)
+            .ok()?;
+        let name = String::from_utf8(name).ok()?;
+        (Self::key(&name) == self.key).then_some(name)
     }
 }
 
@@ -173,9 +213,28 @@ mod tests {
             Provider::decode(Provider::new("example", &record, &secret).encode()).unwrap();
         assert!(provider.verify(&Provider::key("example"), &secret));
         assert_eq!(provider.hash(), record.hash());
+        assert_eq!(provider.name(&secret).as_deref(), Some("example"));
+        assert!(provider.name(&derive_key(b"wrong-secret")).is_none());
         assert!(!provider.verify(&Provider::key("other"), &secret));
         assert!(!provider.verify(&Provider::key("example"), &derive_key(b"wrong-secret")));
+        provider.name[0] ^= 1;
+        assert!(!provider.verify(&Provider::key("example"), &secret));
+        assert!(provider.name(&secret).is_none());
+        provider.name[0] ^= 1;
         provider.hash = blake3::hash(b"other-record");
         assert!(!provider.verify(&Provider::key("example"), &secret));
+    }
+
+    #[test]
+    fn legacy_provider_mappings_remain_readable() {
+        let secret = derive_key(b"test-secret");
+        let record = Record::new(payload(), &secret);
+        let key = Provider::key("example");
+        let signature = Provider::sign(&key, &record.hash, &[], &secret);
+        let encoded = postcard::to_stdvec(&(&key, &record.hash, &signature)).unwrap();
+        let provider = Provider::decode(encoded).unwrap();
+        assert!(provider.verify(&key, &secret));
+        assert_eq!(provider.hash(), record.hash());
+        assert!(provider.name(&secret).is_none());
     }
 }

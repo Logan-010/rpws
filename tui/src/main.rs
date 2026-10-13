@@ -3,8 +3,11 @@ mod config;
 mod net;
 mod ui;
 
+use std::{collections::HashMap, time::SystemTime};
+
 use clap::Parser;
 use cli::{Cli, Mode};
+use color_eyre::eyre::ContextCompat;
 use config::Config;
 use directories::ProjectDirs;
 use net::{Net, api::NetApi};
@@ -60,6 +63,74 @@ async fn main() -> color_eyre::Result<()> {
                 api_res = api => api_res??,
                 net_res = net.run(local, config.secret()?) => net_res?,
             }
+        }
+        Some(Mode::List { minify }) => {
+            let addr = cli
+                .api_addr
+                .unwrap_or_else(|| format!("http://{}", config.api_address()));
+            let api = NetApi::new(addr);
+
+            api.connect().await?;
+
+            let list = api.list().await?;
+
+            let out = if minify {
+                serde_json::to_string(&list)?
+            } else {
+                serde_json::to_string_pretty(&list)?
+            };
+
+            println!("{out}");
+        }
+        Some(Mode::Get { name, minify }) => {
+            let addr = cli
+                .api_addr
+                .unwrap_or_else(|| format!("http://{}", config.api_address()));
+            let api = NetApi::new(addr);
+
+            api.connect().await?;
+
+            let ent = api.get(&name).await?.context("No entry found")?;
+
+            let mut entry = HashMap::new();
+
+            entry.insert(name, ent);
+
+            let out = if minify {
+                serde_json::to_string(&entry)?
+            } else {
+                serde_json::to_string_pretty(&entry)?
+            };
+
+            println!("{out}");
+        }
+        Some(Mode::Put {
+            name,
+            url,
+            username,
+            password,
+            extra,
+        }) => {
+            let timestamp = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)?
+                .as_secs();
+
+            let payload = shared::RecordPayload {
+                url: url.unwrap_or_default(),
+                username: username.unwrap_or_default(),
+                password: password.unwrap_or_default(),
+                timestamp,
+                extra: extra.unwrap_or_default(),
+            };
+
+            let addr = cli
+                .api_addr
+                .unwrap_or_else(|| format!("http://{}", config.api_address()));
+            let api = NetApi::new(addr);
+
+            api.connect().await?;
+
+            api.put(name, payload).await?;
         }
         None => {
             let addr = cli

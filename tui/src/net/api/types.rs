@@ -57,4 +57,19 @@ impl NetApi {
             .error_for_status()?;
         Ok(())
     }
+
+    pub async fn list(
+        &self,
+    ) -> color_eyre::Result<std::collections::HashMap<String, shared::RecordPayload>> {
+        let body = self
+            .client
+            .get(format!("{}/list", self.addr))
+            .timeout(super::handlers::REQUEST_TIMEOUT + std::time::Duration::from_secs(5))
+            .send()
+            .await?
+            .error_for_status()?
+            .bytes()
+            .await?;
+        Ok(postcard::from_bytes(&body)?)
+    }
 }

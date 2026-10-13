@@ -16,7 +16,7 @@ pub struct Cli {
     pub config: Option<PathBuf>,
 
     /// Overide API address
-    #[arg(long, short = 'a', env = "API_ADDR")]
+    #[arg(long, short = 'a', env = "RPWS_API_ADDR")]
     pub api_addr: Option<String>,
 
     #[clap(subcommand)]
@@ -30,5 +30,41 @@ pub enum Mode {
         /// Don't connect to global IPFS DHT (good for local testing)
         #[arg(long, short = 'l')]
         local: bool,
+    },
+    /// List passwords
+    List {
+        /// Minify output
+        #[arg(long, short = 'm')]
+        minify: bool,
+    },
+    /// Get a password by name
+    Get {
+        /// Name of password to get
+        name: String,
+
+        /// Minify output
+        #[arg(long, short = 'm')]
+        minify: bool,
+    },
+    /// Insert a password
+    Put {
+        /// Name of password
+        name: String,
+
+        /// URL
+        #[arg(long, short = 'U')]
+        url: Option<String>,
+
+        /// Username
+        #[arg(long, short = 'u')]
+        username: Option<String>,
+
+        /// Password
+        #[arg(long, short = 'p')]
+        password: Option<String>,
+
+        /// Extra info
+        #[arg(long, short = 'e')]
+        extra: Option<String>,
     },
 }

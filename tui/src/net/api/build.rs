@@ -11,6 +11,7 @@ pub fn build(requests: mpsc::Sender<Request>) -> Router {
     Router::new()
         .route("/health", get(|| async { (StatusCode::OK, "Running!") }))
         .route("/get", post(handlers::get))
+        .route("/list", get(handlers::list))
         .route("/put", put(handlers::put))
         .with_state(requests)
 }

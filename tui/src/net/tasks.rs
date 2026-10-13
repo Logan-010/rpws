@@ -486,7 +486,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn api_put_get_roundtrip_locally_and_from_remote_peer() {
+    async fn api_put_get_list_roundtrip_locally_and_from_remote_peer() {
         use super::super::api::{self, NetApi};
         use tokio::net::TcpListener;
 
@@ -496,6 +496,18 @@ mod tests {
             let mut provider = net(&provider_dir).await;
             let mut seeker = net(&seeker_dir).await;
             seeker.secret = provider.secret;
+            let invalid_key = shared::Record::new(payload("wrong-key"), &provider.secret);
+            let wrong_secret = shared::Record::new(payload("wrong-secret"), &[0; 32]);
+            let mapping = shared::Provider::new("orphan", &invalid_key, &provider.secret);
+            let store = provider.swarm.behaviour_mut().rpws_kad.store_mut();
+            for record in [
+                kad::Record::new(b"malformed".to_vec(), vec![0xff]),
+                kad::Record::new(b"wrong-key".to_vec(), invalid_key.encode()),
+                kad::Record::new(wrong_secret.hash().to_vec(), wrong_secret.encode()),
+                kad::Record::new(shared::Provider::key("orphan"), mapping.encode()),
+            ] {
+                store.try_put(record).unwrap();
+            }
             let address = loop {
                 if let SwarmEvent::NewListenAddr { address, .. } =
                     provider.swarm.select_next_some().await
@@ -528,13 +540,21 @@ mod tests {
                 _ = &mut provider_server => panic!("API stopped"),
                 _ = async {
                     provider_api.connect().await.unwrap();
+                    assert!(provider_api.list().await.unwrap().is_empty());
                     assert!(provider_api.get("missing").await.unwrap().is_none());
                     assert!(provider_api.get("").await.is_err());
                     assert!(provider_api.put("", payload("invalid")).await.is_err());
                     provider_api.put(name, payload("first")).await.unwrap();
                     assert_eq!(provider_api.get(name).await.unwrap(), Some(payload("first")));
+                    assert_eq!(provider_api.list().await.unwrap(), HashMap::from([(name.to_owned(), payload("first"))]));
                     provider_api.put(name, payload("updated")).await.unwrap();
                     assert_eq!(provider_api.get(name).await.unwrap(), Some(payload("updated")));
+                    provider_api.put("second", payload("second")).await.unwrap();
+                    let passwords = provider_api.list().await.unwrap();
+                    assert_eq!(passwords, HashMap::from([
+                        (name.to_owned(), payload("updated")),
+                        ("second".to_owned(), payload("second")),
+                    ]));
                 } => {},
             }
 
@@ -590,7 +610,7 @@ mod tests {
             }
         })
         .await
-        .expect("API put/get timed out");
+        .expect("API put/get/list timed out");
     }
 
     #[tokio::test]
