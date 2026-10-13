@@ -17,10 +17,20 @@ async fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
 
     let cli = Cli::parse();
+    let logs = ui::LogOutput::default();
+    let log_writer = if cli.headless {
+        tracing_subscriber::fmt::writer::BoxMakeWriter::new(std::io::stdout)
+    } else {
+        tracing_subscriber::fmt::writer::BoxMakeWriter::new(logs.clone())
+    };
 
     if let Err(e) = tracing_subscriber::registry()
         .with(EnvFilter::new(&cli.logging))
-        .with(tracing_subscriber::fmt::layer())
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(cli.headless)
+                .with_writer(log_writer),
+        )
         .try_init()
     {
         eprintln!("Failed to initialize logger: {e:?}");
@@ -63,7 +73,7 @@ async fn main() -> color_eyre::Result<()> {
         let api = net.api();
         let task = task::spawn(net.run());
 
-        let ui_result = ui::run(api);
+        let ui_result = ui::run(api, logs);
         task.abort();
         let _ = task.await;
         ui_result?;
