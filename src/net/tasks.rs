@@ -1,9 +1,18 @@
+use crate::net::records;
+
 use super::{
     Net,
     types::{Behaviour, BehaviourEvent},
 };
 use cid::Cid;
-use libp2p::{StreamProtocol, futures::StreamExt, identify, kad, mdns, swarm::SwarmEvent};
+use libp2p::{
+    StreamProtocol,
+    futures::StreamExt,
+    identify,
+    kad::{self, store::RecordStore},
+    mdns,
+    swarm::SwarmEvent,
+};
 use multihash_codetable::{Code, MultihashDigest};
 use std::collections::HashSet;
 
@@ -72,6 +81,73 @@ fn handle_shared(net: &mut Net, event: SwarmEvent<BehaviourEvent>) {
                 e
             ),
         },
+        SwarmEvent::Behaviour(BehaviourEvent::RelayClient(ev)) => {
+            tracing::info!("Relay client event: {ev:?}");
+        }
+        SwarmEvent::ListenerError { listener_id, error } => {
+            tracing::warn!("Listener {listener_id:?} error: {error}");
+        }
+        SwarmEvent::ListenerClosed {
+            listener_id,
+            addresses,
+            reason,
+        } => {
+            tracing::warn!(
+                "Listener {listener_id:?} closed; addresses: {addresses:?}; reason: {reason:?}"
+            );
+        }
+        SwarmEvent::Behaviour(BehaviourEvent::IpfsKad(kad::Event::InboundRequest {
+            request: kad::InboundRequest::AddProvider { record: Some(r) },
+        })) => {
+            if records::verify_ipfs_provider(&r)
+                && let Err(e) = net
+                    .swarm
+                    .behaviour_mut()
+                    .ipfs_kad
+                    .store_mut()
+                    .add_provider(r)
+            {
+                tracing::warn!("Failed to add provider: {e:?}");
+            }
+        }
+        SwarmEvent::Behaviour(BehaviourEvent::IpfsKad(kad::Event::InboundRequest {
+            request:
+                kad::InboundRequest::PutRecord {
+                    record: Some(r), ..
+                },
+        })) => {
+            if records::verify_ipfs_record(&r)
+                && let Err(e) = net.swarm.behaviour_mut().ipfs_kad.store_mut().put(r)
+            {
+                tracing::warn!("Failed to put record: {e:?}");
+            }
+        }
+        SwarmEvent::Behaviour(BehaviourEvent::RpwsKad(kad::Event::InboundRequest {
+            request: kad::InboundRequest::AddProvider { record: Some(r) },
+        })) => {
+            if records::verify_rpws_provider(&r)
+                && let Err(e) = net
+                    .swarm
+                    .behaviour_mut()
+                    .rpws_kad
+                    .store_mut()
+                    .add_provider(r)
+            {
+                tracing::warn!("Failed to add provider: {e:?}");
+            }
+        }
+        SwarmEvent::Behaviour(BehaviourEvent::RpwsKad(kad::Event::InboundRequest {
+            request:
+                kad::InboundRequest::PutRecord {
+                    record: Some(r), ..
+                },
+        })) => {
+            if records::verify_rpws_record(&r)
+                && let Err(e) = net.swarm.behaviour_mut().rpws_kad.store_mut().put(r)
+            {
+                tracing::warn!("Failed to put record: {e:?}");
+            }
+        }
         ev => tracing::trace!("Swarm event: {ev:?}"),
     }
 }
@@ -84,6 +160,7 @@ pub async fn bootstrap<B: AsRef<[u8]>>(net: &mut Net, of: B) -> color_eyre::Resu
     tracing::info!("Bootstrapping for {}", cid);
 
     let mut qid = None;
+    let mut lid = None;
     let mut connected = HashSet::new();
     let mut connecting = HashSet::new();
 
@@ -168,12 +245,31 @@ pub async fn bootstrap<B: AsRef<[u8]>>(net: &mut Net, of: B) -> color_eyre::Resu
                                 .ipfs_kad
                                 .get_providers(key.clone()),
                         );
+                        lid = Some(
+                            net.swarm
+                                .behaviour_mut()
+                                .ipfs_kad
+                                .start_providing(key.clone())?,
+                        );
                     }
                 }
                 kad::QueryResult::Bootstrap(Err(e)) => {
                     tracing::warn!("IPFS bootstrap error: {e:?}")
                 }
-
+                kad::QueryResult::StartProviding(Ok(_)) => {
+                    _ = lid.take();
+                    tracing::info!("Providing {cid}");
+                }
+                kad::QueryResult::StartProviding(Err(e)) => {
+                    _ = lid.take();
+                    tracing::warn!("Failed to provide {cid}: {e:?}, retrying...");
+                    lid = Some(
+                        net.swarm
+                            .behaviour_mut()
+                            .ipfs_kad
+                            .start_providing(key.clone())?,
+                    );
+                }
                 kad::QueryResult::GetProviders(Ok(
                     kad::GetProvidersOk::FinishedWithNoAdditionalRecord { .. },
                 )) => {
@@ -232,4 +328,12 @@ pub async fn bootstrap<B: AsRef<[u8]>>(net: &mut Net, of: B) -> color_eyre::Resu
     }
 
     Ok(())
+}
+
+pub async fn run(net: &mut Net) -> color_eyre::Result<()> {
+    loop {
+        match net.swarm.select_next_some().await {
+            ev => handle_shared(net, ev),
+        }
+    }
 }

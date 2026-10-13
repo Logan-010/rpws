@@ -40,17 +40,22 @@ impl Net {
                 .expect("Valid address");
 
             for id in Self::BOOTNODES {
-                let addr = base_addr
-                    .clone()
-                    .with_p2p(id.parse().expect("Valid ID"))
-                    .expect("Valid address base")
-                    .with(Protocol::P2pCircuit);
+                let peer = id.parse().expect("Valid ID");
+                let addr = base_addr.clone().with(Protocol::P2p(peer));
 
-                self.swarm.listen_on(addr)?;
+                self.swarm
+                    .behaviour_mut()
+                    .ipfs_kad
+                    .add_address(&peer, addr.clone());
             }
+            self.swarm.behaviour_mut().ipfs_kad.bootstrap()?;
         }
 
         tasks::bootstrap(self, of).await
+    }
+
+    pub async fn run(&mut self) -> color_eyre::Result<()> {
+        tasks::run(self).await
     }
 }
 
