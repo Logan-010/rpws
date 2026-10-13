@@ -93,3 +93,17 @@ pub(super) async fn list(
         body,
     ))
 }
+
+pub(super) async fn delete(
+    State(sender): State<mpsc::Sender<Request>>,
+    body: Bytes,
+) -> Result<StatusCode, ApiError> {
+    let name: String =
+        postcard::from_bytes(&body).map_err(|_| (StatusCode::BAD_REQUEST, "Invalid name"))?;
+    if name.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "Name must not be empty"));
+    }
+    let (reply, response) = oneshot::channel();
+    request(sender, Request::Delete { name, reply }, response).await?;
+    Ok(StatusCode::NO_CONTENT)
+}

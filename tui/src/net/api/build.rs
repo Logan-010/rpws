@@ -3,7 +3,7 @@ use crate::net::requests::Request;
 use axum::{
     Router,
     http::StatusCode,
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
 };
 use tokio::sync::mpsc;
 
@@ -13,5 +13,6 @@ pub fn build(requests: mpsc::Sender<Request>) -> Router {
         .route("/get", post(handlers::get))
         .route("/list", get(handlers::list))
         .route("/put", put(handlers::put))
+        .route("/delete", delete(handlers::delete))
         .with_state(requests)
 }

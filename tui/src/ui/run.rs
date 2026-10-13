@@ -1,30 +1,27 @@
+use super::app::App;
 use crate::net::api::NetApi;
 use ratatui::{
     DefaultTerminal,
-    crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    crossterm::event::{self, Event, KeyEventKind},
 };
 use std::time::Duration;
 
-fn app(term: &mut DefaultTerminal, _api: &NetApi) -> color_eyre::Result<()> {
+fn app(term: &mut DefaultTerminal, api: NetApi) -> color_eyre::Result<()> {
+    let mut app = App::new(api);
+    app.refresh();
     loop {
-        term.draw(|f| {
-            f.render_widget("Hello, world!", f.area());
-        })?;
+        app.receive();
+        term.draw(|frame| super::view::draw(frame, &mut app))?;
         if event::poll(Duration::from_millis(100))?
             && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
+            && key.kind != KeyEventKind::Release
+            && app.key(key)
         {
-            match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    return Ok(());
-                }
-                _ => {}
-            }
+            return Ok(());
         }
     }
 }
 
 pub fn run(api: NetApi) -> color_eyre::Result<()> {
-    ratatui::run(|term| app(term, &api))
+    ratatui::run(|term| app(term, api))
 }

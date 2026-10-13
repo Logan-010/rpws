@@ -72,4 +72,16 @@ impl NetApi {
             .await?;
         Ok(postcard::from_bytes(&body)?)
     }
+
+    pub async fn delete<N: AsRef<str>>(&self, name: N) -> color_eyre::Result<()> {
+        self.client
+            .delete(format!("{}/delete", self.addr))
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .timeout(super::handlers::REQUEST_TIMEOUT + std::time::Duration::from_secs(5))
+            .body(postcard::to_stdvec(name.as_ref())?)
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
 }

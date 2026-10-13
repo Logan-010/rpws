@@ -555,10 +555,18 @@ mod tests {
                         (name.to_owned(), payload("updated")),
                         ("second".to_owned(), payload("second")),
                     ]));
+                    assert!(provider_api.delete("").await.is_err());
+                    provider_api.delete("second").await.unwrap();
+                    assert_eq!(provider_api.list().await.unwrap(), HashMap::from([(name.to_owned(), payload("updated"))]));
+                    provider_api.delete("second").await.unwrap();
                 } => {},
             }
 
             let key = kad::RecordKey::new(&shared::Provider::key(name));
+            let removed_key = kad::RecordKey::new(&shared::Provider::key("second"));
+            let store = provider.swarm.behaviour_mut().rpws_kad.store_mut();
+            assert!(store.try_get(&removed_key).unwrap().is_none());
+            assert!(store.try_provided().unwrap().iter().all(|record| record.key != removed_key));
             let index = provider
                 .swarm
                 .behaviour_mut()

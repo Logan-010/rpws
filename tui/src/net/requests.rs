@@ -19,6 +19,10 @@ pub enum Request {
         payload: shared::RecordPayload,
         reply: oneshot::Sender<color_eyre::Result<()>>,
     },
+    Delete {
+        name: String,
+        reply: oneshot::Sender<color_eyre::Result<()>>,
+    },
 }
 
 enum Query {
@@ -90,7 +94,23 @@ impl Requests {
                 let result = Self::put(net, name, payload);
                 let _ = reply.send(result);
             }
+            Request::Delete { name, reply } => {
+                let result = Self::delete(net, name);
+                let _ = reply.send(result);
+            }
         }
+    }
+
+    // Remove the local name mapping and stop advertising it. Remote replicas
+    // are independent; Kademlia does not support a distributed delete.
+    fn delete(net: &mut Net, name: String) -> color_eyre::Result<()> {
+        let key = kad::RecordKey::new(&shared::Provider::key(name));
+        let peer = *net.swarm.local_peer_id();
+        let kad = &mut net.swarm.behaviour_mut().rpws_kad;
+        kad.store_mut().try_remove(&key)?;
+        kad.store_mut().try_remove_provider(&key, &peer)?;
+        kad.stop_providing(&key);
+        Ok(())
     }
 
     fn list(net: &mut Net) -> color_eyre::Result<HashMap<String, shared::RecordPayload>> {
