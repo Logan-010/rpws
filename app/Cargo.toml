@@ -6,6 +6,8 @@ description = "Reliable P2P password manager."
 authors = ["Logan-010"]
 
 [dependencies]
+arboard = { version = "3.6", default-features = false, features = ["core-graphics", "windows-sys", "wayland-data-control"] }
+jiff = "0.2"
 libp2p-kad-redb = { workspace = true }
 base64 = "0.23.1"
 cid = "0.11.3"

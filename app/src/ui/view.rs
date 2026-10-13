@@ -1,4 +1,4 @@
-use super::app::{App, Form, Mode};
+use super::app::{App, CopyField, Form, Mode};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -81,6 +81,10 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
                     if !entry.payload.extra.is_empty() {
                         lines.push(detail("notes", &entry.payload.extra));
                     }
+                    lines.push(detail(
+                        "updated",
+                        &super::time::format_timestamp(entry.payload.timestamp),
+                    ));
                     lines.push(Line::from(""));
                 }
                 ListItem::new(lines)
@@ -106,19 +110,54 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
     );
     let hints = match app.mode {
         Mode::Browse => {
-            "↑/↓ select   enter expand   v reveal\na add   e edit   d delete   r refresh   q quit"
+            "↑/↓ select   enter expand   v reveal   c copy\na add   e edit   d delete   r refresh   q quit"
         }
         Mode::Form(_) => "tab / shift-tab field   ←/→ cursor\nctrl+s save   esc cancel",
         Mode::Delete(_) => "enter / y remove   esc / n cancel",
+        Mode::Copy(_) => "↑/↓ select field   enter copy   esc cancel",
     };
     frame.render_widget(Paragraph::new(hints).style(muted()), help);
-    match &app.mode {
-        Mode::Form(form) => draw_form(frame, area, form, app.busy()),
+    let selected_name = app.selected().map(|entry| clean(&entry.name));
+    let busy = app.busy();
+    match &mut app.mode {
+        Mode::Form(form) => draw_form(frame, area, form, busy),
         Mode::Delete(name) => {
             let popup = centered(area, 64, 8);
             frame.render_widget(Clear, popup);
             frame.render_widget(Paragraph::new(format!("Remove “{}” from the local vault?\n\nRemote replicas are unaffected.\n\nEnter / y to remove · Esc to cancel", clean(name)))
                 .wrap(Wrap { trim: false }).block(Block::bordered().title(" Remove password ").border_style(accent())), popup);
+        }
+        Mode::Copy(list) => {
+            let popup = centered(area, 44, 11);
+            frame.render_widget(Clear, popup);
+            let block = Block::bordered()
+                .title(" Copy to clipboard ")
+                .border_style(accent());
+            let inner = block.inner(popup);
+            frame.render_widget(block, popup);
+            let [name, fields, help] = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Min(6),
+                Constraint::Length(1),
+            ])
+            .areas(inner);
+            frame.render_widget(
+                Paragraph::new(selected_name.unwrap_or_default()).style(muted()),
+                name,
+            );
+            let items =
+                CopyField::ALL.map(|field| ListItem::new(format!("Copy {}", field.label())));
+            frame.render_stateful_widget(
+                List::new(items)
+                    .highlight_symbol("› ")
+                    .highlight_style(accent()),
+                fields,
+                list,
+            );
+            frame.render_widget(
+                Paragraph::new("Enter copy · Esc cancel").style(muted()),
+                help,
+            );
         }
         Mode::Browse => {}
     }

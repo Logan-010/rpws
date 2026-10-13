@@ -15,6 +15,49 @@ pub(super) struct Entry {
     pub payload: RecordPayload,
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum CopyField {
+    Name,
+    Url,
+    Username,
+    Password,
+    Notes,
+    Updated,
+}
+
+impl CopyField {
+    pub const ALL: [Self; 6] = [
+        Self::Name,
+        Self::Url,
+        Self::Username,
+        Self::Password,
+        Self::Notes,
+        Self::Updated,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Name => "name",
+            Self::Url => "URL",
+            Self::Username => "username",
+            Self::Password => "password",
+            Self::Notes => "notes",
+            Self::Updated => "updated datetime",
+        }
+    }
+
+    fn value(self, entry: &Entry) -> String {
+        match self {
+            Self::Name => entry.name.clone(),
+            Self::Url => entry.payload.url.clone(),
+            Self::Username => entry.payload.username.clone(),
+            Self::Password => entry.payload.password.clone(),
+            Self::Notes => entry.payload.extra.clone(),
+            Self::Updated => super::time::format_timestamp(entry.payload.timestamp),
+        }
+    }
+}
+
 pub(super) struct Form {
     pub fields: [String; 5],
     pub field: usize,
@@ -119,6 +162,7 @@ pub(super) enum Mode {
     Browse,
     Form(Form),
     Delete(String),
+    Copy(ListState),
 }
 
 enum Update {
@@ -137,6 +181,8 @@ pub(super) struct App {
     pub status: String,
     pub error: bool,
     pending: Option<(mpsc::Receiver<Result<Update, String>>, JoinHandle<()>)>,
+    // Keep ownership alive: Linux clipboard contents are served by this handle.
+    clipboard: Option<arboard::Clipboard>,
 }
 
 impl App {
@@ -151,6 +197,7 @@ impl App {
             status: String::new(),
             error: false,
             pending: None,
+            clipboard: None,
         }
     }
 
@@ -302,6 +349,25 @@ impl App {
                 KeyCode::Char('n') | KeyCode::Esc => self.mode = Mode::Browse,
                 _ => {}
             },
+            Mode::Copy(list) => match key.code {
+                KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab => {
+                    list.select(Some(
+                        (list.selected().unwrap_or(0) + 1) % CopyField::ALL.len(),
+                    ));
+                }
+                KeyCode::Up | KeyCode::Char('k') | KeyCode::BackTab => {
+                    list.select(Some(
+                        (list.selected().unwrap_or(0) + CopyField::ALL.len() - 1)
+                            % CopyField::ALL.len(),
+                    ));
+                }
+                KeyCode::Enter => {
+                    let field = CopyField::ALL[list.selected().unwrap_or(0)];
+                    self.copy(field);
+                }
+                KeyCode::Char('q') | KeyCode::Esc => self.mode = Mode::Browse,
+                _ => {}
+            },
             Mode::Browse => match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => return true,
                 KeyCode::Down | KeyCode::Char('j') => self.navigate(1),
@@ -315,6 +381,12 @@ impl App {
                     self.revealed = false;
                 }
                 KeyCode::Char('v') => self.revealed = !self.revealed,
+                KeyCode::Char('c') => {
+                    if self.selected().is_some() {
+                        self.revealed = false;
+                        self.mode = Mode::Copy(ListState::default().with_selected(Some(0)));
+                    }
+                }
                 KeyCode::Char('a') => {
                     self.revealed = false;
                     self.mode = Mode::Form(Form::new(None));
@@ -338,6 +410,31 @@ impl App {
             },
         }
         false
+    }
+
+    fn copy(&mut self, field: CopyField) {
+        let Some(entry) = self.selected() else { return };
+        let value = field.value(entry);
+        let result = (|| {
+            if self.clipboard.is_none() {
+                self.clipboard = Some(arboard::Clipboard::new()?);
+            }
+            self.clipboard
+                .as_mut()
+                .expect("clipboard initialized")
+                .set_text(value)
+        })();
+        match result {
+            Ok(()) => {
+                self.status = format!("Copied {} to clipboard", field.label());
+                self.error = false;
+                self.mode = Mode::Browse;
+            }
+            Err(error) => {
+                self.status = format!("Could not copy {}: {error}", field.label());
+                self.error = true;
+            }
+        }
     }
 
     fn navigate(&mut self, delta: isize) {
@@ -438,6 +535,64 @@ mod tests {
         assert_eq!(editing.fields[0], "original");
     }
 
+    #[test]
+    fn copy_picker_navigates_cancels_and_preserves_raw_field_values() {
+        let mut app = App::new(NetApi::new("http://127.0.0.1:1".into()));
+        press(&mut app, KeyCode::Char('c'));
+        assert!(matches!(app.mode, Mode::Browse));
+        app.entries.push(Entry {
+            name: "example".into(),
+            payload: RecordPayload {
+                url: "https://example.com".into(),
+                username: "alice ü".into(),
+                password: "secret-unique".into(),
+                timestamp: 1,
+                extra: "line one\nline two\t🔑".into(),
+            },
+        });
+        app.list.select(Some(0));
+        let entry = app.selected().unwrap();
+        assert_eq!(CopyField::Name.value(entry), "example");
+        assert_eq!(CopyField::Url.value(entry), "https://example.com");
+        assert_eq!(CopyField::Username.value(entry), "alice ü");
+        assert_eq!(CopyField::Password.value(entry), "secret-unique");
+        assert_eq!(CopyField::Notes.value(entry), "line one\nline two\t🔑");
+        assert_eq!(
+            CopyField::Updated.value(entry),
+            super::super::time::format_timestamp(1)
+        );
+
+        press(&mut app, KeyCode::Char('v'));
+        press(&mut app, KeyCode::Char('c'));
+        assert!(!app.revealed);
+        press(&mut app, KeyCode::Up);
+        assert!(matches!(&app.mode, Mode::Copy(list) if list.selected() == Some(5)));
+        press(&mut app, KeyCode::Char('j'));
+        assert!(matches!(&app.mode, Mode::Copy(list) if list.selected() == Some(0)));
+        press(&mut app, KeyCode::Tab);
+        assert!(matches!(&app.mode, Mode::Copy(list) if list.selected() == Some(1)));
+
+        for (width, height) in [(80, 24), (36, 12)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| super::super::view::draw(frame, &mut app))
+                .unwrap();
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(text.contains("Copy URL"));
+            assert!(text.contains("Copy password"));
+            assert!(!text.contains("secret-unique"));
+        }
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Browse));
+        assert_eq!(app.entries.len(), 1);
+    }
+
     #[tokio::test]
     async fn ui_crud_uses_api_and_preserves_edits_on_failure() {
         let router = Router::new()
@@ -483,6 +638,9 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect();
         assert!(text.contains("alice"));
+        assert!(text.contains(&super::super::time::format_timestamp(
+            app.selected().unwrap().payload.timestamp
+        )));
         assert!(!text.contains("secret-unique"));
         press(&mut app, KeyCode::Char('v'));
         terminal

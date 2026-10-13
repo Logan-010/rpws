@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["libp2p-kad-redb", "shared", "tui"]
+members = ["libp2p-kad-redb", "shared", "app"]
 
 [workspace.dependencies]
 # Internal
