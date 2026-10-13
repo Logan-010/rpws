@@ -63,9 +63,10 @@ async fn main() -> color_eyre::Result<()> {
         let api = net.api();
         let task = task::spawn(net.run());
 
-        ui::run(api)?;
-
+        let ui_result = ui::run(api);
         task.abort();
+        let _ = task.await;
+        ui_result?;
     } else {
         select! {
             exit_res = signal::ctrl_c() => exit_res?,

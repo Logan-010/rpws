@@ -66,6 +66,11 @@ impl Net {
     }
 
     pub fn cleanup(&mut self) {
+        // Rendezvous discovery is complete; do not restart IPFS provider queries.
+        self.provider_key = None;
+        for mut query in self.swarm.behaviour_mut().ipfs_kad.iter_queries_mut() {
+            query.finish();
+        }
         let rpws_peers: HashSet<PeerId> = self
             .swarm
             .behaviour_mut()
@@ -104,7 +109,13 @@ impl Net {
         let disconnect_peers: Vec<PeerId> = self
             .swarm
             .connected_peers()
-            .filter(|peer| !rpws_peers.contains(peer))
+            .filter(|peer| {
+                !rpws_peers.contains(peer)
+                    && !self
+                        .relays
+                        .as_ref()
+                        .is_some_and(|relays| relays.has_reservation(peer))
+            })
             .copied()
             .collect();
 

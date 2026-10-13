@@ -1,0 +1,10 @@
+identity = "CAESQHmAQDx6fKKFTudGhcMdjMnFY+c5w6peo6c9R8AV0+rB1Sk3pDShR9X0xNk5QhcbjyB1hntYpgmPUTqljiBPWDE="
+secret = "yo bro..."
+listen_addrs = [
+    "/ip4/0.0.0.0/tcp/7776",
+    "/ip6/::/tcp/7776",
+    "/ip4/0.0.0.0/udp/7776/quic-v1",
+    "/ip6/::/udp/7776/quic-v1",
+]
+external_addrs = []
+kademlia_store_path = "/home/seedse/.local/share/rpws/kad2.redb"
