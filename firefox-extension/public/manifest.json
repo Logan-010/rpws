@@ -1,0 +1,19 @@
+{
+  "manifest_version": 2,
+  "name": "RPWS",
+  "version": "0.1.0",
+  "description": "A P2P password manager powered by the RPWS WASM API.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "rpws@rpws.local",
+      "strict_min_version": "115.0"
+    }
+  },
+  "permissions": ["storage", "clipboardWrite", "<all_urls>"],
+  "browser_action": {
+    "default_title": "RPWS passwords",
+    "default_popup": "popup.html"
+  },
+  "background": { "page": "background.html", "persistent": true },
+  "content_security_policy": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; connect-src 'self' ws: wss:"
+}

@@ -36,3 +36,21 @@ X11 and Wayland (with a data-control-capable compositor) on Linux.
 
 Removal deletes the local name mapping and stops advertising it. It does not
 delete independent copies stored on remote peers.
+
+## Firefox peer sync
+
+Build the extension as described in `firefox-extension/README.md`, and rebuild
+and restart the daemon (`cargo build -p rpws`). Import the base64 `secret` from
+the daemon configuration into extension setup. Both clients derive the same
+encryption key from that 32-byte seed.
+
+Use a WebSocket listener as the extension's bootstrap address, such as
+`/ip4/127.0.0.1/tcp/7776/ws/p2p/<daemon-peer-id>`. The HTTP API and plain TCP/QUIC
+listeners cannot serve browser libp2p connections.
+
+Peers exchange authenticated encrypted password mappings and payloads over
+`/rpws/sync/1.0.0` on connection and every five seconds. The extension's
+**Refresh** waits for a network sync, caches the results, and reports connection
+or secret mismatch errors. This lets a new peer discover preexisting passwords
+without already knowing their names. Older daemons need to be rebuilt to expose
+this enumeration protocol.

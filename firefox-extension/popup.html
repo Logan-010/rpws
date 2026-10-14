@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>RPWS passwords</title></head>
+  <body>
+    <header class="flex items-center justify-between border-b border-slate-800 px-6 py-4">
+      <div><h1 class="text-xl font-bold tracking-tight">RPWS <span class="text-indigo-400">vault</span></h1><p class="text-xs text-slate-400">Your passwords, your peers.</p></div>
+      <button id="settings" class="secondary" aria-label="Open settings">Settings</button>
+    </header>
+    <div id="status" role="status" aria-live="polite" class="hidden mx-6 mt-4 rounded-lg border p-3 text-sm"></div>
+    <main id="app" class="p-6"><p class="text-slate-400">Loading WASM and your save…</p></main>
+    <input id="import-file" type="file" accept=".rpws,application/octet-stream" class="hidden" aria-label="Import RPWS save">
+    <script type="module" src="/src/popup.js"></script>
+  </body>
+</html>

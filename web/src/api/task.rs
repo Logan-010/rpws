@@ -36,6 +36,15 @@ pub async fn task(
     mut receiver: mpsc::UnboundedReceiver<Request>,
 ) -> color_eyre::Result<()> {
     let mut requests = Requests::default();
+    let secret = shared::derive_key(save.secret);
+    let mut sync = super::sync::Sync::default();
+    for address in &save.bootstrap_addrs {
+        if let Some(Protocol::P2p(peer)) = address.iter().last() {
+            sync.bootstraps.insert(peer);
+        }
+    }
+    sync.start(&mut swarm, &secret, None);
+    let mut next_sync = Instant::now() + Duration::from_secs(5);
     let mut maintenance = gloo_timers::future::IntervalStream::new(1_000).fuse();
     let provider_key = kad::RecordKey::new(&Code::Blake3_256.digest(&save.secret).to_bytes());
     let mut provider_query = None;
@@ -45,19 +54,29 @@ pub async fn task(
             event = swarm.select_next_some().fuse() => event,
             request = receiver.next().fuse() => {
                 let Some(request) = request else { return Ok(()); };
-                requests.handle(&mut swarm, &save.secret, request);
+                match request {
+                    Request::Sync { reply } => sync.start(&mut swarm, &secret, Some(reply)),
+                    request => requests.handle(&mut swarm, &secret, request),
+                }
                 continue;
             },
             _ = maintenance.select_next_some() => {
                 requests.maintain(&mut swarm);
+                if Instant::now() >= next_sync {
+                    sync.start(&mut swarm, &secret, None);
+                    next_sync = Instant::now() + Duration::from_secs(5);
+                }
                 if provider_query.is_none() && Instant::now() >= next_search {
-                    provider_query = Some(swarm.behaviour_mut().ipfs_kad.get_providers(provider_key.clone()));
+                    provider_query = Some(swarm.behaviour_mut().rpws_kad.get_providers(provider_key.clone()));
                 }
                 continue;
             },
         };
         match event {
-            SwarmEvent::Behaviour(BehaviourEvent::IpfsKad(
+            SwarmEvent::Behaviour(BehaviourEvent::Sync(event)) => {
+                sync.handle(&mut swarm, &secret, event)
+            }
+            SwarmEvent::Behaviour(BehaviourEvent::RpwsKad(
                 kad::Event::OutboundQueryProgressed {
                     id, result, step, ..
                 },
@@ -90,7 +109,7 @@ pub async fn task(
                 kad::Event::OutboundQueryProgressed {
                     id, result, step, ..
                 },
-            )) => requests.progressed(&mut swarm, &save.secret, id, result, step.last),
+            )) => requests.progressed(&mut swarm, &secret, id, result, step.last),
             SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received {
                 peer_id,
                 info:
@@ -102,15 +121,11 @@ pub async fn task(
                 ..
             })) => {
                 tracing::trace!("Connected to {}", peer_id);
-
-                if protocols.contains(&StreamProtocol::new(Behaviour::IPFS_KAD_PROTOCOL)) {
-                    for addr in listen_addrs.iter().filter(|addr| dialable_address(addr)) {
-                        swarm
-                            .behaviour_mut()
-                            .ipfs_kad
-                            .add_address(&peer_id, addr.clone());
-                    }
+                if protocols.contains(&StreamProtocol::new(shared::sync::PROTOCOL)) {
+                    sync.peers.insert(peer_id);
+                    sync.start(&mut swarm, &secret, None);
                 }
+
                 if protocols.contains(&StreamProtocol::new(Behaviour::RPWS_KAD_PROTOCOL)) {
                     for addr in listen_addrs.iter().filter(|addr| dialable_address(addr)) {
                         swarm
@@ -118,27 +133,6 @@ pub async fn task(
                             .rpws_kad
                             .add_address(&peer_id, addr.clone());
                     }
-                }
-            }
-            SwarmEvent::Behaviour(BehaviourEvent::IpfsKad(kad::Event::InboundRequest {
-                request: kad::InboundRequest::AddProvider { record: Some(r) },
-            })) => {
-                if records::verify_ipfs_provider(&r)
-                    && let Err(e) = swarm.behaviour_mut().ipfs_kad.store_mut().add_provider(r)
-                {
-                    tracing::warn!("Failed to add provider: {e:?}");
-                }
-            }
-            SwarmEvent::Behaviour(BehaviourEvent::IpfsKad(kad::Event::InboundRequest {
-                request:
-                    kad::InboundRequest::PutRecord {
-                        record: Some(r), ..
-                    },
-            })) => {
-                if records::verify_ipfs_record(&r)
-                    && let Err(e) = swarm.behaviour_mut().ipfs_kad.store_mut().put(r)
-                {
-                    tracing::warn!("Failed to put record: {e:?}");
                 }
             }
             SwarmEvent::Behaviour(BehaviourEvent::RpwsKad(kad::Event::InboundRequest {
@@ -156,7 +150,7 @@ pub async fn task(
                         record: Some(r), ..
                     },
             })) => {
-                if records::verify_rpws_record(&r, &save.secret)
+                if records::verify_rpws_record(&r, &secret)
                     && let Err(e) = swarm.behaviour_mut().rpws_kad.store_mut().put(r)
                 {
                     tracing::warn!("Failed to put record: {e:?}");

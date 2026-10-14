@@ -14,7 +14,30 @@ pub struct Api {
 }
 
 impl Api {
-    pub async fn new(save: Save) -> color_eyre::Result<Self> {
+    pub async fn new(mut save: Save) -> color_eyre::Result<Self> {
+        // Earlier browser saves encrypted records directly with the seed.
+        // Rewrap these cached records using the daemon's derived key, retaining
+        // the seed and save format so importing/copying a secret stays stable.
+        if let Some(store) = &mut save.store {
+            use libp2p::kad::store::RecordStore;
+            let legacy = shared::sync::entries(
+                store.records().map(|r| (r.key.to_vec(), r.value.clone())),
+                &save.secret,
+            );
+            let key = shared::derive_key(save.secret);
+            for entry in legacy {
+                let (name, payload) = entry.decode(&save.secret).expect("Verified legacy record");
+                let old =
+                    shared::Provider::decode(&entry.mapping).expect("Verified legacy mapping");
+                store.remove(&libp2p::kad::RecordKey::new(old.hash()));
+                for (record_key, value) in shared::sync::Entry::new(&name, payload, &key)
+                    .records(&key)
+                    .unwrap()
+                {
+                    store.put(libp2p::kad::Record::new(record_key, value))?;
+                }
+            }
+        }
         let swarm = swarm::new_swarm(save.clone()).await?;
         let (sender, receiver) = mpsc::unbounded();
 
@@ -47,6 +70,11 @@ impl Api {
     pub async fn connect(&self) -> color_eyre::Result<()> {
         let (reply, response) = oneshot::channel();
         self.request(Request::Connect { reply }, response).await
+    }
+
+    pub async fn sync(&self) -> color_eyre::Result<u32> {
+        let (reply, response) = oneshot::channel();
+        self.request(Request::Sync { reply }, response).await
     }
 
     pub async fn get<N: AsRef<str>>(

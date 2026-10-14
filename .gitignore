@@ -1,3 +1,5 @@
 /target
 /result
 config.toml
+/firefox-extension/node_modules
+/chrome-extension/node_modules

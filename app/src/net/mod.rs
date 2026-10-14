@@ -8,4 +8,5 @@ mod records;
 mod relays;
 mod requests;
 mod swarm;
+mod sync;
 mod tasks;

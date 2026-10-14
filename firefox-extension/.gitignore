@@ -1,0 +1,4 @@
+/dist/
+/wasm/
+/node_modules/
+/web-ext-artifacts/

@@ -2,8 +2,8 @@ use crate::{api::store, save::Save};
 use color_eyre::eyre::bail;
 use libp2p::{
     StreamProtocol, Swarm, SwarmBuilder, Transport, core::upgrade::Version, identify,
-    identity::Keypair, kad, multiaddr::Protocol, noise, ping, swarm::NetworkBehaviour,
-    websocket_websys as websocket, yamux,
+    identity::Keypair, kad, multiaddr::Protocol, noise, ping, request_response,
+    swarm::NetworkBehaviour, websocket_websys as websocket, yamux,
 };
 use std::time::Duration;
 
@@ -11,29 +11,28 @@ use std::time::Duration;
 pub struct Behaviour {
     ping: ping::Behaviour,
     identify: identify::Behaviour,
-    pub ipfs_kad: kad::Behaviour<kad::store::MemoryStore>,
     pub rpws_kad: kad::Behaviour<store::SerializableMemoryStore>,
+    pub sync: request_response::cbor::Behaviour<shared::sync::Request, shared::sync::Response>,
 }
 
 impl Behaviour {
     const CLIENT_PROTOCOL: &str = concat!("/rpws/web/", env!("CARGO_PKG_VERSION"));
-    pub const IPFS_KAD_PROTOCOL: &str = "/ipfs/kad/1.0.0";
     pub const RPWS_KAD_PROTOCOL: &str = "/rpws/kad/1.0.0";
 
     pub fn new(keypair: &Keypair, store: Option<store::SerializableMemoryStore>) -> Self {
         Self {
+            sync: request_response::cbor::Behaviour::new(
+                [(
+                    StreamProtocol::new(shared::sync::PROTOCOL),
+                    request_response::ProtocolSupport::Full,
+                )],
+                request_response::Config::default().with_request_timeout(Duration::from_secs(15)),
+            ),
             ping: ping::Behaviour::new(ping::Config::new()),
             identify: identify::Behaviour::new(identify::Config::new(
                 String::from(Self::CLIENT_PROTOCOL),
                 keypair.public(),
             )),
-            ipfs_kad: kad::Behaviour::with_config(
-                keypair.public().to_peer_id(),
-                kad::store::MemoryStore::new(keypair.public().to_peer_id()),
-                kad::Config::new(StreamProtocol::new(Self::IPFS_KAD_PROTOCOL))
-                    .set_record_filtering(kad::StoreInserts::FilterBoth)
-                    .clone(),
-            ),
             rpws_kad: kad::Behaviour::with_config(
                 keypair.public().to_peer_id(),
                 store.unwrap_or_else(|| {
@@ -64,10 +63,6 @@ pub async fn new_swarm(save: Save) -> color_eyre::Result<Swarm<Behaviour>> {
         .build();
     swarm
         .behaviour_mut()
-        .ipfs_kad
-        .set_mode(Some(kad::Mode::Client));
-    swarm
-        .behaviour_mut()
         .rpws_kad
         .set_mode(Some(kad::Mode::Client));
 
@@ -76,7 +71,14 @@ pub async fn new_swarm(save: Save) -> color_eyre::Result<Swarm<Behaviour>> {
             bail!("Bootstrap addr must end in /p2p")
         };
 
-        swarm.behaviour_mut().ipfs_kad.add_address(&id, addr);
+        swarm
+            .behaviour_mut()
+            .rpws_kad
+            .add_address(&id, addr.clone());
+        swarm.add_peer_address(id, addr.clone());
+        if let Err(error) = swarm.dial(addr.with(Protocol::P2p(id))) {
+            tracing::warn!("Cannot dial bootstrap peer {id}: {error}");
+        }
     }
 
     Ok(swarm)

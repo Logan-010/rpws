@@ -3,6 +3,8 @@ use chacha20poly1305::{KeyInit, XChaCha20Poly1305, aead::Aead};
 use multihash_codetable::{Code, Multihash, MultihashDigest};
 use serde::{Deserialize, Serialize};
 
+pub mod sync;
+
 pub struct Provide<D: AsRef<[u8]>>(D);
 
 impl<D: AsRef<[u8]>> Provide<D> {

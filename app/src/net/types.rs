@@ -3,8 +3,12 @@ use crate::{
     net::{relays::Relays, requests::Request, swarm, tasks},
 };
 use libp2p::{
-    Multiaddr, StreamProtocol, Swarm, autonat, dcutr, identify, identity::Keypair, kad, mdns,
-    multiaddr::Protocol, ping, relay, swarm::NetworkBehaviour,
+    Multiaddr, StreamProtocol, Swarm, autonat, dcutr, identify,
+    identity::Keypair,
+    kad, mdns,
+    multiaddr::Protocol,
+    ping, relay, request_response,
+    swarm::{NetworkBehaviour, behaviour::toggle::Toggle},
 };
 use redb::Database;
 use tokio::sync::mpsc;
@@ -16,6 +20,9 @@ pub struct Net {
     pub(super) provider_key: Option<kad::RecordKey>,
     api: mpsc::Sender<Request>,
     pub(super) requests: mpsc::Receiver<Request>,
+    pub(super) sync_peers: std::collections::HashSet<libp2p::PeerId>,
+    pub(super) sync_pending:
+        std::collections::HashMap<request_response::OutboundRequestId, libp2p::PeerId>,
 }
 
 impl Net {
@@ -40,6 +47,8 @@ impl Net {
             provider_key: None,
             api,
             requests,
+            sync_peers: Default::default(),
+            sync_pending: Default::default(),
         })
     }
 
@@ -76,8 +85,9 @@ pub struct Behaviour {
     identify: identify::Behaviour,
     pub ipfs_kad: kad::Behaviour<kad::store::MemoryStore>,
     pub rpws_kad: kad::Behaviour<libp2p_kad_redb::RedbStore>,
+    pub sync: request_response::cbor::Behaviour<shared::sync::Request, shared::sync::Response>,
     dcutr: dcutr::Behaviour,
-    mdns: mdns::tokio::Behaviour,
+    mdns: Toggle<mdns::tokio::Behaviour>,
     relay_client: relay::client::Behaviour,
     autonat: autonat::v2::client::Behaviour,
 }
@@ -93,6 +103,14 @@ impl Behaviour {
         database: Database,
     ) -> Result<Self, std::io::Error> {
         Ok(Self {
+            sync: request_response::cbor::Behaviour::new(
+                [(
+                    StreamProtocol::new(shared::sync::PROTOCOL),
+                    request_response::ProtocolSupport::Full,
+                )],
+                request_response::Config::default()
+                    .with_request_timeout(std::time::Duration::from_secs(15)),
+            ),
             ping: ping::Behaviour::new(ping::Config::new()),
             identify: identify::Behaviour::new(
                 identify::Config::new(String::from(Self::CLIENT_PROTOCOL), keypair.public())
@@ -113,15 +131,20 @@ impl Behaviour {
                     .clone(),
             ),
             dcutr: dcutr::Behaviour::new(keypair.public().to_peer_id()),
-            mdns: mdns::tokio::Behaviour::new(
+            mdns: Toggle::from(Some(mdns::tokio::Behaviour::new(
                 mdns::Config {
                     enable_ipv6: true,
                     ..Default::default()
                 },
                 keypair.public().to_peer_id(),
-            )?,
+            )?)),
             relay_client,
             autonat: autonat::v2::client::Behaviour::default(),
         })
+    }
+
+    #[cfg(test)]
+    pub(super) fn disable_mdns(&mut self) {
+        self.mdns = Toggle::from(None);
     }
 }

@@ -1,0 +1,17 @@
+@import "tailwindcss";
+
+@layer base {
+  body { @apply m-0 bg-slate-950 text-slate-100; width: 440px; min-height: 480px; }
+  button { @apply cursor-pointer rounded-lg px-3 py-2 text-sm font-medium transition disabled:cursor-wait disabled:opacity-50; }
+  button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { @apply outline-2 outline-offset-2 outline-indigo-400; }
+  label { @apply block text-sm font-medium text-slate-300; }
+  input:not([type="file"]), textarea { @apply mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100; }
+  textarea { @apply resize-y; }
+}
+@layer components {
+  .primary { @apply bg-indigo-500 text-white hover:bg-indigo-400; }
+  .secondary { @apply border border-slate-700 bg-slate-900 text-slate-200 hover:bg-slate-800; }
+  .danger { @apply border border-rose-900 bg-rose-950 text-rose-300 hover:bg-rose-900; }
+  .hint { @apply text-xs leading-relaxed text-slate-400; }
+  .panel { @apply rounded-xl border border-slate-800 bg-slate-900/50 p-4; }
+}

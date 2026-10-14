@@ -1,0 +1,23 @@
+{
+  "name": "rpws-firefox-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:wasm": "wasm-pack build ../web --target web --out-dir ../firefox-extension/wasm --out-name web --no-opt",
+    "build:ui": "vite build",
+    "build": "npm run build:wasm && npm run build:ui",
+    "lint": "web-ext lint --source-dir dist --warnings-as-errors",
+    "test": "node tests/wasm-smoke.mjs && node --test tests/popup-state.test.mjs",
+    "start": "web-ext run --source-dir dist",
+    "package": "web-ext build --source-dir dist --overwrite-dest"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.0",
+    "jsdom": "^26.1.0",
+    "tailwindcss": "^4.1.0",
+    "vite": "^7.0.0",
+    "wasm-pack": "0.13.1",
+    "web-ext": "^8.9.0"
+  }
+}

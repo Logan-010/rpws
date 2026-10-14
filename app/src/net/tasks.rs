@@ -60,6 +60,13 @@ fn dialable_address(address: &Multiaddr) -> bool {
 }
 
 fn handle_identify(net: &mut Net, peer_id: libp2p::PeerId, info: identify::Info) {
+    if info
+        .protocols
+        .contains(&StreamProtocol::new(shared::sync::PROTOCOL))
+    {
+        net.sync_peers.insert(peer_id);
+        super::sync::request(net, peer_id);
+    }
     if net.provider_key.is_some()
         && info
             .protocols
@@ -128,6 +135,7 @@ fn find_providers(net: &mut Net, key: &kad::RecordKey) -> kad::QueryId {
 
 pub(super) fn handle_shared(net: &mut Net, event: SwarmEvent<BehaviourEvent>) {
     match event {
+        SwarmEvent::Behaviour(BehaviourEvent::Sync(event)) => super::sync::handle(net, event),
         SwarmEvent::ConnectionEstablished {
             peer_id,
             endpoint: libp2p::core::ConnectedPoint::Dialer { address, .. },
@@ -295,6 +303,16 @@ pub async fn run<B: AsRef<[u8]>>(net: &mut Net, of: B) -> color_eyre::Result<()>
     let key = kad::RecordKey::new(&cid.hash().to_bytes());
     net.provider_key = Some(key.clone());
 
+    // Browser peers discover the same rendezvous key in the RPWS DHT.
+    if let Err(error) = net
+        .swarm
+        .behaviour_mut()
+        .rpws_kad
+        .start_providing(key.clone())
+    {
+        tracing::warn!("Failed to advertise RPWS vault provider: {error}");
+    }
+
     tracing::info!("Running network for {}", cid);
 
     let mut qid = None;
@@ -303,6 +321,7 @@ pub async fn run<B: AsRef<[u8]>>(net: &mut Net, of: B) -> color_eyre::Result<()>
     let mut retries = ProviderRetries::default();
     let mut search_started = false;
     let mut next_search = Instant::now();
+    let mut next_sync = Instant::now();
     let mut maintenance = tokio::time::interval(Duration::from_secs(1));
     maintenance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -315,6 +334,11 @@ pub async fn run<B: AsRef<[u8]>>(net: &mut Net, of: B) -> color_eyre::Result<()>
             }
             _ = maintenance.tick() => {
                 requests.maintain(net);
+                if Instant::now() >= next_sync {
+                    let peers: Vec<_> = net.sync_peers.iter().copied().filter(|peer| net.swarm.is_connected(peer)).collect();
+                    for peer in peers { super::sync::request(net, peer); }
+                    next_sync = Instant::now() + SEARCH_RETRY;
+                }
                 if search_started && qid.is_none() && Instant::now() >= next_search {
                     qid = Some(find_providers(net, &key));
                 }
@@ -470,9 +494,13 @@ mod tests {
         config["listen_addrs"] =
             toml::Value::Array(vec![toml::Value::String("/ip4/127.0.0.1/tcp/0".into())]);
         config["bootstrap_addrs"] = toml::Value::Array(Vec::new());
-        Net::new(&Config::decode(toml::to_string(&config).unwrap()).unwrap())
+        let mut net = Net::new(&Config::decode(toml::to_string(&config).unwrap()).unwrap())
             .await
-            .unwrap()
+            .unwrap();
+        // Keep local regression swarms from discovering unrelated live daemons
+        // and following their public DHT routes.
+        net.swarm.behaviour_mut().disable_mdns();
+        net
     }
 
     fn payload(password: &str) -> shared::RecordPayload {
@@ -668,6 +696,144 @@ mod tests {
     struct RelayServer {
         relay: libp2p::relay::Behaviour,
         identify: identify::Behaviour,
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Node.js and npm run build:wasm in firefox-extension"]
+    async fn browser_sync_enumerates_daemon_passwords_over_websocket() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config: toml::Value = toml::from_str(&Config::new().encode().unwrap()).unwrap();
+        config["kademlia_store_path"] =
+            toml::Value::String(directory.path().join("kad.redb").to_str().unwrap().into());
+        config["listen_addrs"] =
+            toml::Value::Array(vec![toml::Value::String("/ip4/127.0.0.1/tcp/0/ws".into())]);
+        config["bootstrap_addrs"] = toml::Value::Array(Vec::new());
+        use base64::Engine;
+        config["secret"] =
+            toml::Value::String(base64::engine::general_purpose::STANDARD.encode([7; 32]));
+        let mut provider = Net::new(&Config::decode(toml::to_string(&config).unwrap()).unwrap())
+            .await
+            .unwrap();
+        provider.swarm.behaviour_mut().disable_mdns();
+        for (name, password) in [
+            ("daemon account", "daemon-password"),
+            ("second account", "second-password"),
+        ] {
+            for (key, value) in shared::sync::Entry::new(name, payload(password), &provider.secret)
+                .records(&provider.secret)
+                .unwrap()
+            {
+                provider
+                    .swarm
+                    .behaviour_mut()
+                    .rpws_kad
+                    .store_mut()
+                    .try_put(kad::Record::new(key, value))
+                    .unwrap();
+            }
+        }
+        let address = loop {
+            if let SwarmEvent::NewListenAddr { address, .. } =
+                provider.swarm.select_next_some().await
+            {
+                break address;
+            }
+        }
+        .with(Protocol::P2p(*provider.swarm.local_peer_id()));
+        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../firefox-extension/tests/net-sync.mjs");
+        // Reproduce the previous browser Save's postcard layout so the real
+        // WASM loader also proves that direct-key caches migrate without loss.
+        #[derive(serde::Serialize)]
+        struct LegacyRecord {
+            key: Vec<u8>,
+            value: Vec<u8>,
+            publisher: Option<String>,
+            expires_in_ms: Option<u64>,
+        }
+        #[derive(serde::Serialize)]
+        struct LegacyConfig {
+            max_records: usize,
+            max_value_bytes: usize,
+            max_providers_per_key: usize,
+            max_provided_keys: usize,
+        }
+        #[derive(serde::Serialize)]
+        struct LegacyStore {
+            local_id: String,
+            config: LegacyConfig,
+            records: Vec<LegacyRecord>,
+            providers: Vec<()>,
+        }
+        #[derive(serde::Serialize)]
+        struct LegacySave {
+            identity: Vec<u8>,
+            secret: [u8; 32],
+            bootstrap_addrs: Vec<()>,
+            store: Option<LegacyStore>,
+        }
+        let identity = libp2p::identity::Keypair::generate_ed25519();
+        let entry =
+            shared::sync::Entry::new("legacy account", payload("legacy-password"), &[7; 32]);
+        let legacy = LegacySave {
+            identity: identity.to_protobuf_encoding().unwrap(),
+            secret: [7; 32],
+            bootstrap_addrs: Vec::new(),
+            store: Some(LegacyStore {
+                local_id: identity.public().to_peer_id().to_string(),
+                config: LegacyConfig {
+                    max_records: 2,
+                    max_value_bytes: 65 * 1024,
+                    max_providers_per_key: 20,
+                    max_provided_keys: 1024,
+                },
+                records: entry
+                    .records(&[7; 32])
+                    .unwrap()
+                    .into_iter()
+                    .map(|(key, value)| LegacyRecord {
+                        key,
+                        value,
+                        publisher: None,
+                        expires_in_ms: None,
+                    })
+                    .collect(),
+                providers: Vec::new(),
+            }),
+        };
+        let legacy_path = directory.path().join("legacy.rpws");
+        std::fs::write(&legacy_path, postcard::to_stdvec(&legacy).unwrap()).unwrap();
+        let mut child = std::process::Command::new("node")
+            .arg(script)
+            .arg(address.to_string())
+            .arg(legacy_path)
+            .spawn()
+            .unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(45), async {
+            tokio::select! {
+                result = provider.run(true, [7; 32]) => panic!("provider stopped: {result:?}"),
+                status = async {
+                    loop {
+                        if let Some(status) = child.try_wait().unwrap() { break status; }
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                } => status,
+            }
+        })
+        .await;
+        if result.is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        assert!(result.expect("Browser sync timed out").success());
+        let entries = super::super::sync::snapshot(&mut provider).unwrap();
+        assert!(
+            entries
+                .iter()
+                .filter_map(|entry| entry.decode(&provider.secret))
+                .any(|(name, payload)| name == "browser account"
+                    && payload.password == "browser-password")
+        );
     }
 
     #[tokio::test]

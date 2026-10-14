@@ -11,6 +11,9 @@ type Reply<T> = oneshot::Sender<color_eyre::Result<T>>;
 type GetReply = Reply<Option<shared::RecordPayload>>;
 
 pub enum Request {
+    Sync {
+        reply: super::sync::Reply,
+    },
     Connect {
         reply: Reply<()>,
     },
@@ -74,6 +77,7 @@ pub(super) struct Requests(HashMap<kad::QueryId, Query>);
 impl Requests {
     pub fn handle(&mut self, swarm: &mut Swarm<Behaviour>, secret: &[u8; 32], request: Request) {
         match request {
+            Request::Sync { .. } => unreachable!("Sync requests are handled by the swarm task"),
             Request::Connect { reply } => {
                 let _ = reply.send(Ok(()));
             }
