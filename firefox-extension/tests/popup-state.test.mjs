@@ -24,6 +24,8 @@ function background(loaded = true) {
       case 'ui-state-set': if (revision === message.revision) state = message.state; break;
       case 'state': data = { loaded, addresses: ['/dns4/peer/tcp/443/wss/p2p/peer'] }; break;
       case 'list': data = entries; break;
+      case 'autofill-context': data = { origin: 'https://example.com' }; break;
+      case 'autofill': data = { passwordFilled: true, usernameFilled: true }; break;
       case 'put': entries[message.name] = message.payload; break;
       case 'sync': data = 0; break;
       case 'setup': case 'import': loaded = true; state = null; revision++; break;
@@ -192,6 +194,19 @@ test('Open creates a new tab for the entry URL and stays disabled for empty URLs
     assert.equal(emptyUrlButton.disabled, true);
     emptyUrlButton.click();
     assert.equal(browser.openedTabs.length, 1);
+  } finally { popup.close(); }
+});
+
+test('Autofill prioritizes current-site logins and sends only the selected name', async () => {
+  const browser = background();
+  browser.entries['AAA other site'] = { ...browser.entries['Example <&"'], url: 'https://other.example' };
+  const popup = await open(browser);
+  try {
+    assert.equal(popup.query('article h3').textContent, 'Example <&"');
+    assert.equal(popup.window.document.querySelectorAll('[data-action="autofill"]').length, 1);
+    await popup.click('[data-action="autofill"]');
+    assert.ok(browser.calls.includes('autofill'));
+    assert.match(popup.query('#status').textContent, /Login filled/);
   } finally { popup.close(); }
 });
 

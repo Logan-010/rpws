@@ -8,7 +8,7 @@
     "build:ui": "vite build",
     "build": "npm run build:wasm && npm run build:ui",
     "lint": "web-ext lint --source-dir dist --warnings-as-errors",
-    "test": "node tests/wasm-smoke.mjs && node --test tests/popup-state.test.mjs",
+    "test": "node tests/wasm-smoke.mjs && node --test tests/popup-state.test.mjs tests/autofill.test.mjs",
     "start": "web-ext run --source-dir dist",
     "package": "web-ext build --source-dir dist --overwrite-dest"
   },

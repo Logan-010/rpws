@@ -9,7 +9,13 @@
       "strict_min_version": "115.0"
     }
   },
-  "permissions": ["storage", "clipboardWrite", "<all_urls>"],
+  "permissions": ["storage", "clipboardWrite", "tabs", "<all_urls>"],
+  "commands": {
+    "autofill": {
+      "suggested_key": { "default": "Ctrl+Shift+L", "mac": "Command+Shift+L" },
+      "description": "Autofill the matching RPWS login"
+    }
+  },
   "icons": { "256": "icon.png" },
   "browser_action": {
     "default_title": "RPAWS passwords",

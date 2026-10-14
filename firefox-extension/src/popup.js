@@ -13,6 +13,12 @@ const initialUi = () => ({ view: 'setup', search: '', expanded: [], drafts: {}, 
 let ui = initialUi();
 let searchIndex;
 let copyOpener = null;
+let currentOrigin = null;
+
+function matchesCurrentSite(record) {
+  try { return !!currentOrigin && new URL(record.url).origin === currentOrigin; }
+  catch { return false; }
+}
 
 function remember() {
   if (hydrating) return;
@@ -146,6 +152,7 @@ function setup() {
 
 async function vault() {
   entries = await rpc('list');
+  currentOrigin = (await rpc('autofill-context')).origin;
   searchIndex = new Fuse(Object.entries(entries).map(([name, record]) => ({ name, record })), {
     keys: [
       { name: 'name', weight: 0.5 },
@@ -161,6 +168,7 @@ async function vault() {
   render(app, `<div class="mb-4 flex items-center justify-between"><h2 class="text-lg font-semibold">Passwords <span class="text-sm text-neutral-400">(${Object.keys(entries).length})</span></h2>
     <div class="flex gap-2"><button class="secondary" data-action="refresh">Refresh</button><button class="primary" data-action="add">Add</button></div></div>
     <label class="mb-4"><span class="sr-only">Fuzzy search passwords</span><input id="search" type="search" placeholder="Fuzzy search names, usernames, URLs, or notes" autocomplete="off"></label>
+    <p class="hint mb-4">${currentOrigin ? `Autofill for ${escape(currentOrigin)}. Matching logins appear first. Select Autofill, or use Ctrl+Shift+L (Command+Shift+L on Mac).` : 'Open an HTTP or HTTPS login page to use autofill.'}</p>
     <div id="entries" class="space-y-3"></div>`);
   app.querySelector('#search').value = ui.search;
   renderEntries(ui.search);
@@ -169,11 +177,12 @@ async function vault() {
 function renderEntries(search) {
   const filtered = search.trim()
     ? searchIndex.search(search.trim()).map(({ item }) => [item.name, item.record])
-    : Object.entries(entries).sort(([a], [b]) => a.localeCompare(b));
+    : Object.entries(entries).sort(([a, left], [b, right]) => Number(matchesCurrentSite(right)) - Number(matchesCurrentSite(left)) || a.localeCompare(b));
   render(document.querySelector('#entries'), filtered.length ? filtered.map(([name, record]) => `
     <article class="panel">
       <h3 class="break-words font-semibold">${escape(name)}</h3>
       <p class="mt-1 break-words text-sm text-neutral-400">${escape(record.username || 'No username')}</p>
+      ${matchesCurrentSite(record) ? `<button class="primary mt-3" data-action="autofill" data-name="${escape(name)}">Autofill</button>` : ''}
       ${record.url ? `<p class="mt-1 break-words text-xs text-neutral-300">${escape(record.url)}</p>` : ''}
       <details class="mt-3" data-name="${escape(name)}" ${ui.expanded.includes(name) ? 'open' : ''}><summary class="cursor-pointer text-sm text-neutral-300">Details</summary>
         <div class="mt-3 space-y-2">
@@ -386,6 +395,10 @@ app.addEventListener('click', (event) => {
       notify(`Vault synced. ${count} password${count === 1 ? '' : 's'} added or updated.`);
     }
     if (action === 'delete') { await rpc('delete', { name }); await vault(); notify('Password removed.'); }
+    if (action === 'autofill') {
+      const result = await rpc('autofill', { name });
+      notify(result.passwordFilled ? 'Login filled. Submit the form when ready.' : 'Username filled. Continue to the password step, then use Autofill again.');
+    }
     if (action === 'open') {
       let url;
       try { url = new URL(entries[name].url); } catch { throw new Error('This entry needs a valid URL to open.'); }

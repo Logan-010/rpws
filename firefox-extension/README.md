@@ -48,6 +48,22 @@ After UI-only edits, `npm run build:ui` reuses the generated WASM bindings.
   editing. Removal affects local mappings; independent remote copies remain.
 - **Open** opens an entry's HTTP/HTTPS URL in a new tab. Entries without a URL
   have this button disabled.
+- **Autofill** appears on logins whose saved URL has the same exact origin as
+  the active tab (scheme, hostname, and port). Matching entries appear first when
+  search is empty. Open a site's login form, open RPWS, and choose **Autofill**.
+  Set the entry's URL to the actual login site's origin if it differs from the
+  site's homepage. Passwords are never filled on subdomains or HTTP downgrades
+  of a saved HTTPS URL.
+- **Ctrl+Shift+L** (**Command+Shift+L** on Mac) fills the current page when there
+  is exactly one matching login. With zero or multiple matches it opens the popup
+  so you can choose a login. Customize the shortcut in Firefox's **Manage
+  Extension Shortcuts** screen if it conflicts with another extension.
+- Autofill dispatches input/change events for interactive forms, supports forms
+  added dynamically and open shadow roots, and avoids hidden, disabled,
+  read-only, and new-password fields. Focus a field to choose between login forms.
+  For username-first sign-ins, fill the username, advance, then autofill again
+  on the password step. Forms are never submitted automatically. Autofill targets
+  the top-level page; login forms inside iframes are not filled.
 - **Copy** opens a modal field picker for the name, URL, username, password,
   notes, or formatted update time. Use Tab or arrow keys to choose a field,
   Enter to copy, and Escape or Cancel to close. Passwords stay masked in the
@@ -89,7 +105,10 @@ listener (by default `/ip4/127.0.0.1/tcp/7776/ws/p2p/<daemon-peer-id>`), not its
 TCP-only or HTTP API address. Refresh reports unreachable peers, unsupported
 sync protocols, and mismatched secrets instead of claiming a cache-only refresh.
 The extension requests host access so the WASM WebSocket transport can contact
-user-configured bootstrap peers; it injects no page scripts.
+user-configured bootstrap peers and autofill can reach login pages. The autofill
+content script is injected only on request and receives only the selected login's
+username and password after the background page checks the active site's origin.
+Firefox-restricted pages cannot be autofilled.
 
 ## Verification
 
@@ -100,6 +119,9 @@ It also exercises the background message handler with the real WASM and mocked
 Firefox storage, including invalid imports and changing peers without losing records.
 DOM-based popup tests close and recreate the popup to check draft/view restoration,
 pending imports, and resetting UI state after switching or unloading a save.
+Autofill tests cover site matching, credential isolation, shortcut selection,
+form events, username-first steps, shadow roots, and rejecting unavailable or
+signup/reset fields.
 
 After `npm run build:wasm`, run the live local WebSocket integration test from
 the repository root:
@@ -123,3 +145,8 @@ After building and linting, check in Firefox:
 6. Remove an entry and confirm it stays absent after reopening.
 7. Choose **Unload save**, cancel once, then export and confirm. Reopen the popup
    to verify setup appears, and import the backup to restore the vault.
+8. Open a matching site's login page and choose **Autofill**. Check username and
+   password fill without submission, including a username-first flow. Verify the
+   shortcut with one matching login and the popup chooser with multiple logins.
+9. Open a different host or HTTP version of a saved HTTPS site and verify that
+   the saved login has no Autofill button.

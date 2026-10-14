@@ -48,6 +48,10 @@ try {
   // Exercise the extension's message handler with real WASM and mocked Firefox
   // storage. Only Vite's two asset imports are adapted for Node execution.
   let handler;
+  let commandHandler;
+  let activeUrl = 'https://example.com/login';
+  const fills = [];
+  let popupOpens = 0;
   const cache = {};
   let failRemoval = false;
   const backgroundSnapshots = [];
@@ -57,6 +61,13 @@ try {
     return originalSetInterval(callback, delay, ...args);
   };
   globalThis.browser = {
+    commands: { onCommand: { addListener(listener) { commandHandler = listener; } } },
+    browserAction: { async openPopup() { popupOpens++; } },
+    tabs: {
+      async query() { return [{ id: 1, url: activeUrl }]; },
+      async executeScript() {},
+      async sendMessage(id, message, options) { fills.push({ id, message, options }); return { ok: true, passwordFilled: true }; },
+    },
     runtime: { id: 'test-rpws', onMessage: { addListener(listener) { handler = listener; } } },
     storage: { local: {
       async get(key) { return { [key]: cache[key] }; },
@@ -70,6 +81,7 @@ try {
   globalThis.testWasmBytes = await readFile(new URL('../wasm/web_bg.wasm', import.meta.url));
   const background = (await readFile(new URL('../src/background.js', import.meta.url), 'utf8'))
     .replace("'../wasm/web.js'", JSON.stringify(new URL('../wasm/web.js', import.meta.url).href))
+    .replace("'./autofill.js'", JSON.stringify(new URL('../src/autofill.js', import.meta.url).href))
     .replace("import wasmUrl from '../wasm/web_bg.wasm?url';", 'const wasmUrl = globalThis.testWasmBytes;');
   await import(`data:text/javascript;base64,${Buffer.from(background).toString('base64')}`);
   const message = (action, data = {}) => handler({ type: 'rpws', action, ...data }, { id: browser.runtime.id });
@@ -83,6 +95,24 @@ try {
   assert.equal((await message('put', { name, payload })).ok, true);
   const exported = (await message('export')).data;
   assert.deepEqual((await message('list')).data[name], payload);
+  assert.equal(handler({ type: 'rpws', action: 'secret' }, { id: browser.runtime.id, tab: { id: 1 } }), undefined);
+  assert.equal((await message('autofill-context')).data.origin, 'https://example.com');
+  assert.equal((await message('autofill', { name })).ok, true);
+  assert.equal(fills.at(-1).message.password, payload.password);
+  assert.deepEqual(fills.at(-1).options, { frameId: 0 });
+  activeUrl = 'https://example.com.evil.test';
+  assert.equal((await message('autofill', { name })).ok, false);
+  assert.equal(fills.length, 1);
+  activeUrl = 'https://example.com/login';
+  commandHandler('autofill');
+  await message('state');
+  assert.equal(fills.length, 2);
+  await message('put', { name: 'Second login', payload });
+  commandHandler('autofill');
+  await message('state');
+  assert.equal(popupOpens, 1);
+  assert.equal(fills.length, 2);
+  await message('delete', { name: 'Second login' });
   const beforeUnload = structuredClone(cache.rpwsSave);
   const oldRevision = (await message('ui-state')).data.revision;
   const draftUi = { view: 'editor', drafts: { 'entry-form': { password: 'draft' } } };

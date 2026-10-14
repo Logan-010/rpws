@@ -1,5 +1,6 @@
 import initialize, * as wasm from '../wasm/web.js';
 import wasmUrl from '../wasm/web_bg.wasm?url';
+import { activeLoginTab, fillTab, loginOrigin } from './autofill.js';
 
 const KEY = 'rpwsSave';
 let save = null;
@@ -118,6 +119,18 @@ async function dispatch(message) {
       return true;
     case 'secret': return btoa(String.fromCharCode(...wasm.view_secret(save)));
     case 'list': return JSON.parse(await wasm.list_json());
+    case 'autofill-context': {
+      try {
+        const tab = await activeLoginTab();
+        return { origin: loginOrigin(tab.url) };
+      } catch { return { origin: null }; }
+    }
+    case 'autofill': {
+      const tab = await activeLoginTab();
+      const entries = JSON.parse(await wasm.list_json());
+      if (!Object.hasOwn(entries, message.name)) throw new Error('This login no longer exists.');
+      return fillTab(tab, entries[message.name]);
+    }
     case 'sync': {
       try { return await wasm.sync(); }
       finally { await persist(); }
@@ -156,6 +169,8 @@ async function dispatch(message) {
 
 browser.runtime.onMessage.addListener((message, sender) => {
   if (sender.id !== browser.runtime.id || message?.type !== 'rpws') return;
+  // Content scripts must never gain access to vault or popup-state RPCs.
+  if (sender.tab) return;
   // Store input events immediately, independently of slower vault operations.
   if (message.action === 'ui-state-set') {
     if (message.revision === uiRevision) uiState = structuredClone(message.state);
@@ -175,3 +190,19 @@ setInterval(() => {
   serial(async () => { await ready; await persist(); }).catch(console.error);
 }, 30_000);
 ready.catch(console.error);
+
+browser.commands.onCommand.addListener((command) => {
+  if (command !== 'autofill') return;
+  serial(async () => {
+    await ready;
+    if (!save) return browser.browserAction.openPopup();
+    const tab = await activeLoginTab();
+    const entries = JSON.parse(await wasm.list_json());
+    const matches = Object.values(entries).filter((record) => loginOrigin(record.url) === loginOrigin(tab.url));
+    if (matches.length !== 1) return browser.browserAction.openPopup();
+    await fillTab(tab, matches[0]);
+  }).catch(async (error) => {
+    console.error(error);
+    await browser.browserAction.openPopup();
+  });
+});
