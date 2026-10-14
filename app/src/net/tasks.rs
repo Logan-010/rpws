@@ -39,8 +39,6 @@ impl ProviderRetries {
 }
 
 fn dialable_address(address: &Multiaddr) -> bool {
-    // Keep this protocol filter aligned with the TCP, QUIC, DNS, WebSocket,
-    // and relay transports configured in swarm::build_swarm.
     address.iter().all(|protocol| match protocol {
         Protocol::Ip4(ip) => !ip.is_link_local(),
         Protocol::Ip6(ip) => !ip.is_unicast_link_local(),
