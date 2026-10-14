@@ -17,7 +17,7 @@ pub struct Behaviour {
 
 impl Behaviour {
     const CLIENT_PROTOCOL: &str = concat!("/rpws/web/", env!("CARGO_PKG_VERSION"));
-    pub const RPWS_KAD_PROTOCOL: &str = "/rpws/kad/1.0.0";
+    pub const RPWS_KAD_PROTOCOL: &str = "/rpws/kad/2.0.0";
 
     pub fn new(keypair: &Keypair, store: Option<store::SerializableMemoryStore>) -> Self {
         Self {

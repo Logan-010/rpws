@@ -124,7 +124,7 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
         Mode::Delete(name) => {
             let popup = centered(area, 64, 8);
             frame.render_widget(Clear, popup);
-            frame.render_widget(Paragraph::new(format!("Remove “{}” from the local vault?\n\nRemote replicas are unaffected.\n\nEnter / y to remove · Esc to cancel", clean(name)))
+            frame.render_widget(Paragraph::new(format!("Remove “{}” from the vault?\n\nDeletion syncs to peers; older copies will not restore it.\n\nEnter / y to remove · Esc to cancel", clean(name)))
                 .wrap(Wrap { trim: false }).block(Block::bordered().title(" Remove password ").border_style(accent())), popup);
         }
         Mode::Copy(list) => {

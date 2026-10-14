@@ -26,11 +26,13 @@ impl Api {
             );
             let key = shared::derive_key(save.secret);
             for entry in legacy {
-                let (name, payload) = entry.decode(&save.secret).expect("Verified legacy record");
+                let (name, state) = entry
+                    .decode_state(&save.secret)
+                    .expect("Verified legacy record");
                 let old =
                     shared::Provider::decode(&entry.mapping).expect("Verified legacy mapping");
                 store.remove(&libp2p::kad::RecordKey::new(old.hash()));
-                for (record_key, value) in shared::sync::Entry::new(&name, payload, &key)
+                for (record_key, value) in shared::sync::Entry::from_state(&name, state, &key)
                     .records(&key)
                     .unwrap()
                 {

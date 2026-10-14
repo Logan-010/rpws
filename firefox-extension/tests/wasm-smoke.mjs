@@ -45,6 +45,13 @@ try {
   await wasm.init(deletedSnapshot);
   assert.deepEqual(JSON.parse(await wasm.list_json()), {});
   assert.deepEqual(wasm.view_bootstrap_addrs(deletedSnapshot), [addr]);
+  assert.equal(await wasm.get(name), undefined);
+  await assert.rejects(wasm.sync(), (error) => String(error).includes('Vault sync failed'));
+  assert.deepEqual(JSON.parse(await wasm.list_json()), {});
+  await wasm.put_json(name, JSON.stringify({ ...payload, timestamp: 1 }));
+  const recreated = JSON.parse(await wasm.list_json())[name];
+  assert.equal(recreated.password, payload.password);
+  assert.ok(recreated.timestamp > payload.timestamp);
   // Exercise the extension's message handler with real WASM and mocked Firefox
   // storage. Only Vite's two asset imports are adapted for Node execution.
   let handler;
@@ -65,6 +72,7 @@ try {
     browserAction: { async openPopup() { popupOpens++; } },
     tabs: {
       async query() { return [{ id: 1, url: activeUrl }]; },
+      async get(id) { return { id, url: activeUrl }; },
       async executeScript() {},
       async sendMessage(id, message, options) { fills.push({ id, message, options }); return { ok: true, passwordFilled: true }; },
     },
@@ -96,6 +104,15 @@ try {
   const exported = (await message('export')).data;
   assert.deepEqual((await message('list')).data[name], payload);
   assert.equal(handler({ type: 'rpws', action: 'secret' }, { id: browser.runtime.id, tab: { id: 1 } }), undefined);
+  const inlineSender = { id: browser.runtime.id, tab: { id: 1 }, frameId: 0, url: activeUrl };
+  const inline = (action, data = {}, sender = inlineSender) => handler({ type: 'rpws-inline', action, ...data }, sender);
+  assert.deepEqual((await inline('suggestions')).data, [{ name, username: payload.username }]);
+  assert.equal((await inline('suggestions', {}, { ...inlineSender, frameId: 1 })).ok, false);
+  assert.equal((await inline('suggestions', {}, { ...inlineSender, url: 'https://other.example' })).ok, false);
+  assert.equal((await inline('secret')).ok, false);
+  assert.equal((await inline('select', { name: 'missing login' })).ok, false);
+  assert.equal((await inline('select', { name })).ok, true);
+  assert.equal(fills.pop().message.password, payload.password);
   assert.equal((await message('autofill-context')).data.origin, 'https://example.com');
   assert.equal((await message('autofill', { name })).ok, true);
   assert.equal(fills.at(-1).message.password, payload.password);
@@ -128,6 +145,8 @@ try {
   assert.equal((await message('unload')).ok, true);
   assert.equal((await message('state')).data.loaded, false);
   assert.equal((await message('ui-state')).data.state, null);
+  assert.deepEqual((await inline('suggestions')).data, []);
+  assert.equal((await inline('select', { name })).ok, false);
   await message('ui-state-set', { revision: oldRevision, state: draftUi });
   assert.equal((await message('ui-state')).data.state, null);
   assert.equal(cache.rpwsSave, undefined);

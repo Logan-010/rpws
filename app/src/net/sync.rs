@@ -83,20 +83,20 @@ pub fn handle(net: &mut Net, event: Event<shared::sync::Request, shared::sync::R
     }
 }
 
-fn merge(net: &mut Net, entries: Vec<shared::sync::Entry>) -> color_eyre::Result<()> {
+pub(super) fn merge(net: &mut Net, entries: Vec<shared::sync::Entry>) -> color_eyre::Result<()> {
     let current = snapshot(net)?;
-    let mut timestamps: std::collections::HashMap<_, _> = current
+    let mut versions: std::collections::HashMap<_, _> = current
         .iter()
-        .filter_map(|e| e.decode(&net.secret))
-        .map(|(name, p)| (name, p.timestamp))
+        .filter_map(|e| e.decode_state(&net.secret))
+        .map(|(name, state)| (name, state.version()))
         .collect();
     for entry in entries {
-        let Some((name, payload)) = entry.decode(&net.secret) else {
+        let Some((name, state)) = entry.decode_state(&net.secret) else {
             continue;
         };
-        if timestamps
+        if versions
             .get(&name)
-            .is_some_and(|time| *time >= payload.timestamp)
+            .is_some_and(|version| *version >= state.version())
         {
             continue;
         }
@@ -107,7 +107,7 @@ fn merge(net: &mut Net, entries: Vec<shared::sync::Entry>) -> color_eyre::Result
                 .store_mut()
                 .try_put(kad::Record::new(key, value))?;
         }
-        timestamps.insert(name, payload.timestamp);
+        versions.insert(name, state.version());
     }
     Ok(())
 }

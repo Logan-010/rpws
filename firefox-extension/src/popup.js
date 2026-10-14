@@ -306,7 +306,7 @@ function confirmRemoval(name) {
   ui.view = 'remove';
   ui.removeName = name;
   render(app, `<section class="panel space-y-4"><h2 class="text-lg font-semibold">Remove ${escape(name)}?</h2>
-    <p class="text-sm text-neutral-400">This removes the local name mapping and stops advertising it. Copies on other peers are not deleted.</p>
+    <p class="text-sm text-neutral-400">This records a deletion in your vault and syncs it to connected peers. Older copies will not restore this password. You can add it again later.</p>
     <div class="flex gap-2"><button class="danger" data-action="delete" data-name="${escape(name)}">Remove password</button><button class="secondary" data-action="back">Cancel</button></div></section>`);
 }
 

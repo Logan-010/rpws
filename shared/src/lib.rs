@@ -122,11 +122,36 @@ pub struct RecordPayload {
     pub extra: String,
 }
 
+/// The public password payload stays unchanged; deletion is an encrypted state
+/// with its own timestamp, not an empty password that could appear in the UI.
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RecordState {
+    Live(RecordPayload),
+    Deleted { timestamp: u64 },
+}
+
+impl RecordState {
+    pub fn version(&self) -> (u64, bool) {
+        match self {
+            Self::Live(payload) => (payload.timestamp, false),
+            Self::Deleted { timestamp } => (*timestamp, true),
+        }
+    }
+
+    pub fn next_timestamp(&self, requested: u64) -> u64 {
+        requested.max(self.version().0.saturating_add(1))
+    }
+}
+
 impl Record {
     const NONCE_LENGTH: usize = 24;
 
     pub fn new(payload: RecordPayload, secret: &[u8; 32]) -> Self {
-        let encoded_payload = postcard::to_stdvec(&payload).expect("Could not encode payload");
+        Self::from_state(RecordState::Live(payload), secret)
+    }
+
+    pub fn from_state(state: RecordState, secret: &[u8; 32]) -> Self {
+        let encoded_payload = postcard::to_stdvec(&state).expect("Could not encode record state");
         let nonce: [u8; Self::NONCE_LENGTH] = rand::random();
         let mut encrypted = XChaCha20Poly1305::new(secret.into())
             .encrypt(&nonce.into(), encoded_payload.as_slice())
@@ -158,6 +183,13 @@ impl Record {
     }
 
     pub fn payload(&self, secret: &[u8; 32]) -> Option<RecordPayload> {
+        match self.state(secret)? {
+            RecordState::Live(payload) => Some(payload),
+            RecordState::Deleted { .. } => None,
+        }
+    }
+
+    pub fn state(&self, secret: &[u8; 32]) -> Option<RecordState> {
         let mut nonce = [0u8; Self::NONCE_LENGTH];
         if self.payload.len() < Self::NONCE_LENGTH {
             return None;
@@ -170,7 +202,8 @@ impl Record {
             )
             .ok()?;
 
-        postcard::from_bytes(&decrypted).ok()
+        let (state, remaining) = postcard::take_from_bytes(&decrypted).ok()?;
+        remaining.is_empty().then_some(state)
     }
 }
 
@@ -205,6 +238,31 @@ mod tests {
         assert!(record.payload(&secret).is_none());
         record.payload.truncate(Record::NONCE_LENGTH - 1);
         assert!(record.payload(&secret).is_none());
+    }
+
+    #[test]
+    fn encrypted_deletion_is_not_a_password_and_is_authenticated() {
+        let secret = derive_key(b"test-secret");
+        let state = RecordState::Deleted { timestamp: 12 };
+        let mut record = Record::from_state(state, &secret);
+        assert_eq!(
+            record.state(&secret),
+            Some(RecordState::Deleted { timestamp: 12 })
+        );
+        assert!(record.payload(&secret).is_none());
+        assert!(record.state(&derive_key(b"wrong-secret")).is_none());
+        assert!(
+            RecordState::Deleted { timestamp: 12 }.version()
+                > RecordState::Live(RecordPayload {
+                    timestamp: 12,
+                    ..payload()
+                })
+                .version()
+        );
+        assert_eq!(RecordState::Deleted { timestamp: 12 }.next_timestamp(1), 13);
+        record.payload[0] ^= 1;
+        assert!(!record.verify(&secret));
+        assert!(record.state(&secret).is_none());
     }
 
     #[test]

@@ -49,6 +49,7 @@ enum Query {
     },
     Record {
         key: kad::RecordKey,
+        mapping: kad::RecordKey,
         reply: GetReply,
     },
 }
@@ -93,6 +94,12 @@ impl Requests {
                 let key = kad::RecordKey::new(&shared::Provider::key(name));
                 let kad = &mut swarm.behaviour_mut().rpws_kad;
                 kad.store_mut().prune_expired();
+                if super::records::state(kad.store_mut(), &key, secret)
+                    .is_some_and(|state| state.version().1)
+                {
+                    let _ = reply.send(Ok(None));
+                    return;
+                }
                 if kad.store_mut().get(&key).is_some() {
                     let id = kad.get_record(key.clone());
                     self.0.insert(id, Query::Provider { key, reply });
@@ -109,15 +116,20 @@ impl Requests {
                 let _ = reply.send(Self::put(swarm, secret, name, payload));
             }
             Request::Delete { name, reply } => {
-                // Kademlia has no distributed delete: remove the local mapping
-                // and stop advertising it, as in the app API.
-                let key = kad::RecordKey::new(&shared::Provider::key(name));
-                let peer = *swarm.local_peer_id();
-                let kad = &mut swarm.behaviour_mut().rpws_kad;
-                kad.store_mut().remove(&key);
-                kad.store_mut().remove_provider(&key, &peer);
-                kad.stop_providing(&key);
-                let _ = reply.send(Ok(()));
+                let key = kad::RecordKey::new(&shared::Provider::key(&name));
+                let now = web_time::SystemTime::now()
+                    .duration_since(web_time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let timestamp =
+                    super::records::state(swarm.behaviour_mut().rpws_kad.store_mut(), &key, secret)
+                        .map_or(now, |state| state.next_timestamp(now));
+                let _ = reply.send(Self::put_state(
+                    swarm,
+                    secret,
+                    name,
+                    shared::RecordState::Deleted { timestamp },
+                ));
             }
         }
     }
@@ -155,9 +167,26 @@ impl Requests {
         swarm: &mut Swarm<Behaviour>,
         secret: &[u8; 32],
         name: String,
-        payload: shared::RecordPayload,
+        mut payload: shared::RecordPayload,
     ) -> color_eyre::Result<()> {
-        let record = shared::Record::new(payload, secret);
+        let key = kad::RecordKey::new(&shared::Provider::key(&name));
+        if let Some(state) =
+            super::records::state(swarm.behaviour_mut().rpws_kad.store_mut(), &key, secret)
+        {
+            payload.timestamp = state.next_timestamp(payload.timestamp);
+        }
+        Self::put_state(swarm, secret, name, shared::RecordState::Live(payload))
+    }
+
+    fn put_state(
+        swarm: &mut Swarm<Behaviour>,
+        secret: &[u8; 32],
+        name: String,
+        state: shared::RecordState,
+    ) -> color_eyre::Result<()> {
+        let deleted = state.version().1;
+        let peer = *swarm.local_peer_id();
+        let record = shared::Record::from_state(state, secret);
         let provider = shared::Provider::new(&name, &record, secret);
         let key = kad::RecordKey::new(&shared::Provider::key(&name));
         let record = kad::Record::new(record.hash().to_vec(), record.encode());
@@ -168,7 +197,12 @@ impl Requests {
         kad.store_mut().put(provider.clone())?;
         kad.put_record(record, kad::Quorum::One)?;
         kad.put_record(provider, kad::Quorum::One)?;
-        kad.start_providing(key)?;
+        if deleted {
+            kad.store_mut().remove_provider(&key, &peer);
+            kad.stop_providing(&key);
+        } else {
+            kad.start_providing(key)?;
+        }
         Ok(())
     }
 
@@ -213,9 +247,21 @@ impl Requests {
                 let id = swarm.behaviour_mut().rpws_kad.get_record(key.clone());
                 self.0.insert(id, Query::Provider { key, reply });
             }
-            (query, kad::QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(found)))) => {
+            (query, kad::QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(mut found)))) => {
+                found.record.expires = None;
                 match query {
                     Query::Provider { key, reply } => {
+                        if super::records::state(
+                            swarm.behaviour_mut().rpws_kad.store_mut(),
+                            &key,
+                            secret,
+                        )
+                        .is_some_and(|state| state.version().1)
+                        {
+                            Self::finish(swarm, id);
+                            let _ = reply.send(Ok(None));
+                            return;
+                        }
                         let provider =
                             shared::Provider::decode(&found.record.value)
                                 .ok()
@@ -224,6 +270,7 @@ impl Requests {
                                 });
                         if let Some(provider) = provider {
                             Self::finish(swarm, id);
+                            let mapping = key;
                             let key = kad::RecordKey::new(provider.hash());
                             // Cache verified remote results so they appear in list
                             // and survive a Save round trip.
@@ -233,34 +280,66 @@ impl Requests {
                                 tracing::warn!("Failed to cache password provider: {error}");
                             }
                             let id = swarm.behaviour_mut().rpws_kad.get_record(key.clone());
-                            self.0.insert(id, Query::Record { key, reply });
+                            self.0.insert(
+                                id,
+                                Query::Record {
+                                    key,
+                                    mapping,
+                                    reply,
+                                },
+                            );
                         } else if last {
                             let _ = reply.send(Err(eyre!("Invalid password provider")));
                         } else {
                             self.0.insert(id, Query::Provider { key, reply });
                         }
                     }
-                    Query::Record { key, reply } => {
-                        let payload = shared::Record::decode(&found.record.value)
+                    Query::Record {
+                        key,
+                        mapping,
+                        reply,
+                    } => {
+                        if super::records::state(
+                            swarm.behaviour_mut().rpws_kad.store_mut(),
+                            &mapping,
+                            secret,
+                        )
+                        .is_some_and(|state| state.version().1)
+                        {
+                            Self::finish(swarm, id);
+                            let _ = reply.send(Ok(None));
+                            return;
+                        }
+                        let state = shared::Record::decode(&found.record.value)
                             .ok()
                             .filter(|record| {
                                 found.record.key == key
                                     && key.as_ref() == record.hash()
                                     && record.verify(secret)
                             })
-                            .and_then(|record| record.payload(secret));
-                        if let Some(payload) = payload {
+                            .and_then(|record| record.state(secret));
+                        if let Some(state) = state {
                             Self::finish(swarm, id);
                             if let Err(error) =
                                 swarm.behaviour_mut().rpws_kad.store_mut().put(found.record)
                             {
                                 tracing::warn!("Failed to cache password record: {error}");
                             }
-                            let _ = reply.send(Ok(Some(payload)));
+                            let _ = reply.send(Ok(match state {
+                                shared::RecordState::Live(payload) => Some(payload),
+                                shared::RecordState::Deleted { .. } => None,
+                            }));
                         } else if last {
                             let _ = reply.send(Err(eyre!("Invalid password record")));
                         } else {
-                            self.0.insert(id, Query::Record { key, reply });
+                            self.0.insert(
+                                id,
+                                Query::Record {
+                                    key,
+                                    mapping,
+                                    reply,
+                                },
+                            );
                         }
                     }
                     Query::Providers { reply, .. } => {

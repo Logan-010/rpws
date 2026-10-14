@@ -1,9 +1,9 @@
 //! Encrypted vault enumeration shared by native and browser peers.
-use crate::{Provider, Record, RecordPayload};
+use crate::{Provider, Record, RecordPayload, RecordState};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-pub const PROTOCOL: &str = "/rpws/sync/1.0.0";
+pub const PROTOCOL: &str = "/rpws/sync/2.0.0";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
@@ -13,7 +13,7 @@ pub struct Request {
 impl Request {
     pub fn new(key: &[u8; 32]) -> Self {
         Self {
-            vault: *blake3::keyed_hash(key, b"rpws encrypted vault sync v1").as_bytes(),
+            vault: *blake3::keyed_hash(key, b"rpws encrypted vault sync v2").as_bytes(),
         }
     }
 }
@@ -26,17 +26,29 @@ pub struct Entry {
 
 impl Entry {
     pub fn decode(&self, key: &[u8; 32]) -> Option<(String, RecordPayload)> {
+        let (name, state) = self.decode_state(key)?;
+        match state {
+            RecordState::Live(payload) => Some((name, payload)),
+            RecordState::Deleted { .. } => None,
+        }
+    }
+
+    pub fn decode_state(&self, key: &[u8; 32]) -> Option<(String, RecordState)> {
         let mapping = Provider::decode(&self.mapping).ok()?;
         let name = mapping.name(key)?;
         let record = Record::decode(&self.record).ok()?;
         if mapping.hash() != record.hash() || !record.verify(key) {
             return None;
         }
-        Some((name, record.payload(key)?))
+        Some((name, record.state(key)?))
     }
 
     pub fn new(name: &str, payload: RecordPayload, key: &[u8; 32]) -> Self {
-        let record = Record::new(payload, key);
+        Self::from_state(name, RecordState::Live(payload), key)
+    }
+
+    pub fn from_state(name: &str, state: RecordState, key: &[u8; 32]) -> Self {
+        let record = Record::from_state(state, key);
         Self {
             mapping: Provider::new(name, &record, key).encode(),
             record: record.encode(),
@@ -44,7 +56,7 @@ impl Entry {
     }
 
     pub fn records(&self, key: &[u8; 32]) -> Option<[(Vec<u8>, Vec<u8>); 2]> {
-        let (name, _) = self.decode(key)?;
+        let (name, _) = self.decode_state(key)?;
         let mapping = Provider::decode(&self.mapping).ok()?;
         Some([
             (mapping.hash().to_vec(), self.record.clone()),
@@ -77,15 +89,96 @@ pub fn entries(
                 mapping: bytes.clone(),
                 record: records.get(mapping.hash().as_slice())?.clone(),
             };
-            entry.decode(key)?;
+            entry.decode_state(key)?;
             Some(entry)
         })
         .collect()
 }
 
+pub fn mapping_state(
+    mapping: &[u8],
+    key: &[u8; 32],
+    mut lookup: impl FnMut(&[u8]) -> Option<Vec<u8>>,
+) -> Option<RecordState> {
+    let mapping = Provider::decode(mapping).ok()?;
+    mapping.name(key)?;
+    let record = Record::decode(lookup(mapping.hash())?).ok()?;
+    (mapping.hash() == record.hash() && record.verify(key)).then_some(())?;
+    record.state(key)
+}
+
+/// DHT mappings may arrive before their payload. Never let such a mapping
+/// overwrite a known deletion; a later complete sync can accept a newer edit.
+pub fn accepts_mapping(
+    current: Option<&[u8]>,
+    incoming: &[u8],
+    key: &[u8; 32],
+    mut lookup: impl FnMut(&[u8]) -> Option<Vec<u8>>,
+) -> bool {
+    let Some(current) = current.and_then(|value| mapping_state(value, key, &mut lookup)) else {
+        return true;
+    };
+    match mapping_state(incoming, key, lookup) {
+        Some(incoming) => incoming.version() >= current.version(),
+        None => !current.version().1,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn deletion_is_enumerated_and_blocks_stale_or_incomplete_mappings() {
+        let key = crate::derive_key([7; 32]);
+        let deleted = Entry::from_state("account", RecordState::Deleted { timestamp: 10 }, &key);
+        let live = Entry::new(
+            "account",
+            RecordPayload {
+                url: String::new(),
+                username: "alice".into(),
+                password: "secret".into(),
+                timestamp: 10,
+                extra: String::new(),
+            },
+            &key,
+        );
+        let mut records: HashMap<_, _> = deleted.records(&key).unwrap().into_iter().collect();
+        assert_eq!(entries(records.clone(), &key).len(), 1);
+        assert!(deleted.decode(&key).is_none());
+        assert_eq!(
+            deleted.decode_state(&key).unwrap().1,
+            RecordState::Deleted { timestamp: 10 }
+        );
+        assert!(deleted.decode_state(&[0; 32]).is_none());
+        assert!(!accepts_mapping(
+            Some(&deleted.mapping),
+            &live.mapping,
+            &key,
+            |hash| records.get(hash).cloned()
+        ));
+        records.extend(live.records(&key).unwrap());
+        assert!(!accepts_mapping(
+            Some(&deleted.mapping),
+            &live.mapping,
+            &key,
+            |hash| records.get(hash).cloned()
+        ));
+        let newer = Entry::new(
+            "account",
+            RecordPayload {
+                timestamp: 11,
+                ..live.decode(&key).unwrap().1
+            },
+            &key,
+        );
+        records.extend(newer.records(&key).unwrap());
+        assert!(accepts_mapping(
+            Some(&deleted.mapping),
+            &newer.mapping,
+            &key,
+            |hash| records.get(hash).cloned()
+        ));
+    }
     #[test]
     fn enumeration_authenticates_mapping_and_payload_without_plaintext_on_wire() {
         let key = crate::derive_key([7; 32]);

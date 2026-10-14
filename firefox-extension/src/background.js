@@ -144,8 +144,8 @@ async function dispatch(message) {
       }
       return true;
     case 'delete':
-      await wasm.delete_record(message.name);
-      await persist();
+      try { await wasm.delete_record(message.name); }
+      finally { await persist(); }
       return true;
     case 'export':
       await persist();
@@ -167,8 +167,40 @@ async function dispatch(message) {
   }
 }
 
+async function inlineAutofill(message, sender) {
+  await ready;
+  if (!sender.tab || sender.frameId !== 0) throw new Error('Inline autofill requires a top-level page.');
+  const origin = loginOrigin(sender.url);
+  const tab = await browser.tabs.get(sender.tab.id);
+  if (!origin || origin !== loginOrigin(tab.url)) throw new Error('The login page changed.');
+  if (!['suggestions', 'select'].includes(message.action)) throw new Error('Unknown inline autofill action.');
+  if (!save) {
+    if (message.action === 'suggestions') return [];
+    throw new Error('Create or import a save first.');
+  }
+  const entries = JSON.parse(await wasm.list_json());
+  if (message.action === 'suggestions') {
+    // Only site-matched display metadata goes to the inline picker, never passwords.
+    return Object.entries(entries)
+      .filter(([, record]) => loginOrigin(record.url) === origin)
+      .map(([name, record]) => ({ name, username: record.username }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+  if (!Object.hasOwn(entries, message.name) || loginOrigin(entries[message.name].url) !== origin) {
+    throw new Error('This login no longer matches the page.');
+  }
+  return fillTab(tab, entries[message.name]);
+}
+
 browser.runtime.onMessage.addListener((message, sender) => {
-  if (sender.id !== browser.runtime.id || message?.type !== 'rpws') return;
+  if (sender.id !== browser.runtime.id) return;
+  if (message?.type === 'rpws-inline') {
+    return serial(async () => {
+      try { return { ok: true, data: await inlineAutofill(message, sender) }; }
+      catch (error) { return { ok: false, error: String(error?.message || error) }; }
+    });
+  }
+  if (message?.type !== 'rpws') return;
   // Content scripts must never gain access to vault or popup-state RPCs.
   if (sender.tab) return;
   // Store input events immediately, independently of slower vault operations.

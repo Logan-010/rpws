@@ -95,7 +95,7 @@ pub struct Behaviour {
 impl Behaviour {
     const CLIENT_PROTOCOL: &str = concat!("/rpws/", env!("CARGO_PKG_VERSION"));
     pub const IPFS_KAD_PROTOCOL: &str = "/ipfs/kad/1.0.0";
-    pub const RPWS_KAD_PROTOCOL: &str = "/rpws/kad/1.0.0";
+    pub const RPWS_KAD_PROTOCOL: &str = "/rpws/kad/2.0.0";
 
     pub fn new(
         keypair: &Keypair,

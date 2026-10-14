@@ -270,7 +270,7 @@ impl App {
                     }
                     Update::Deleted(name) => {
                         self.entries.retain(|entry| entry.name != name);
-                        self.status = "Password removed from local vault".into();
+                        self.status = "Password deleted; deletion will sync to peers".into();
                         self.mode = Mode::Browse;
                     }
                 }

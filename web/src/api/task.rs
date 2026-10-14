@@ -147,11 +147,15 @@ pub async fn task(
             SwarmEvent::Behaviour(BehaviourEvent::RpwsKad(kad::Event::InboundRequest {
                 request:
                     kad::InboundRequest::PutRecord {
-                        record: Some(r), ..
+                        record: Some(mut r),
+                        ..
                     },
             })) => {
-                if records::verify_rpws_record(&r, &secret)
-                    && let Err(e) = swarm.behaviour_mut().rpws_kad.store_mut().put(r)
+                let store = swarm.behaviour_mut().rpws_kad.store_mut();
+                // Deletion markers must not age out and allow stale replicas back.
+                r.expires = None;
+                if records::accepts(store, &r, &secret)
+                    && let Err(e) = store.put(r)
                 {
                     tracing::warn!("Failed to put record: {e:?}");
                 }

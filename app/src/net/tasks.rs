@@ -284,13 +284,20 @@ pub(super) fn handle_shared(net: &mut Net, event: SwarmEvent<BehaviourEvent>) {
         SwarmEvent::Behaviour(BehaviourEvent::RpwsKad(kad::Event::InboundRequest {
             request:
                 kad::InboundRequest::PutRecord {
-                    record: Some(r), ..
+                    record: Some(mut r),
+                    ..
                 },
         })) => {
-            if records::verify_rpws_record(&r, &net.secret)
-                && let Err(e) = net.swarm.behaviour_mut().rpws_kad.store_mut().put(r)
-            {
-                tracing::warn!("Failed to put record: {e:?}");
+            let store = net.swarm.behaviour_mut().rpws_kad.store_mut();
+            r.expires = None;
+            match records::accepts(store, &r, &net.secret) {
+                Ok(true) => {
+                    if let Err(e) = store.try_put(r) {
+                        tracing::warn!("Failed to put record: {e:?}");
+                    }
+                }
+                Ok(false) => {}
+                Err(e) => tracing::warn!("Failed to verify record version: {e:?}"),
             }
         }
         ev => tracing::trace!("Swarm event: {ev:?}"),
@@ -514,6 +521,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deletion_survives_stale_sync_and_database_restart() {
+        use super::super::{
+            requests::{Request, Requests},
+            sync,
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let mut peer = net(&directory).await;
+        let secret = peer.secret;
+        let name = "deleted account";
+        let stale = shared::sync::Entry::new(name, payload("old password"), &secret);
+        sync::merge(&mut peer, vec![stale.clone()]).unwrap();
+        let mut requests = Requests::default();
+        let (reply, response) = tokio::sync::oneshot::channel();
+        requests.handle(
+            &mut peer,
+            Request::Delete {
+                name: name.into(),
+                reply,
+            },
+        );
+        response.await.unwrap().unwrap();
+        let deletion = sync::snapshot(&mut peer).unwrap();
+        assert!(deletion.iter().all(|entry| entry.decode(&secret).is_none()));
+        sync::merge(&mut peer, vec![stale.clone()]).unwrap();
+        let mapping = kad::RecordKey::new(&shared::Provider::key(name));
+        let state = super::super::records::state(
+            peer.swarm.behaviour_mut().rpws_kad.store_mut(),
+            &mapping,
+            &secret,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(state.version().1);
+        let timestamp = state.version().0;
+        let store = peer.swarm.behaviour_mut().rpws_kad.store_mut();
+        assert!(
+            !super::super::records::accepts(
+                store,
+                &kad::Record::new(shared::Provider::key(name), stale.mapping.clone()),
+                &secret
+            )
+            .unwrap()
+        );
+        drop(peer);
+        let mut peer = net(&directory).await;
+        peer.secret = secret;
+        sync::merge(&mut peer, vec![stale]).unwrap();
+        let (reply, response) = tokio::sync::oneshot::channel();
+        requests.handle(
+            &mut peer,
+            Request::Get {
+                name: name.into(),
+                reply,
+            },
+        );
+        assert!(response.await.unwrap().unwrap().is_none());
+        let (reply, response) = tokio::sync::oneshot::channel();
+        requests.handle(
+            &mut peer,
+            Request::Put {
+                name: name.into(),
+                payload: payload("recreated password"),
+                reply,
+            },
+        );
+        response.await.unwrap().unwrap();
+        let current = sync::snapshot(&mut peer).unwrap();
+        let (_, recreated) = current
+            .iter()
+            .find_map(|entry| entry.decode(&secret))
+            .unwrap();
+        assert_eq!(recreated.password, "recreated password");
+        assert!(recreated.timestamp > timestamp);
+        sync::merge(&mut peer, deletion).unwrap();
+        assert!(
+            sync::snapshot(&mut peer)
+                .unwrap()
+                .iter()
+                .any(|entry| entry.decode(&secret).is_some())
+        );
+    }
+
+    #[tokio::test]
     async fn api_put_get_list_roundtrip_locally_and_from_remote_peer() {
         use super::super::api::{self, NetApi};
         use tokio::net::TcpListener;
@@ -576,16 +666,16 @@ mod tests {
                     assert_eq!(provider_api.get(name).await.unwrap(), Some(payload("first")));
                     assert_eq!(provider_api.list().await.unwrap(), HashMap::from([(name.to_owned(), payload("first"))]));
                     provider_api.put(name, payload("updated")).await.unwrap();
-                    assert_eq!(provider_api.get(name).await.unwrap(), Some(payload("updated")));
+                    assert_eq!(provider_api.get(name).await.unwrap(), Some(shared::RecordPayload { timestamp: 2, ..payload("updated") }));
                     provider_api.put("second", payload("second")).await.unwrap();
                     let passwords = provider_api.list().await.unwrap();
                     assert_eq!(passwords, HashMap::from([
-                        (name.to_owned(), payload("updated")),
+                        (name.to_owned(), shared::RecordPayload { timestamp: 2, ..payload("updated") }),
                         ("second".to_owned(), payload("second")),
                     ]));
                     assert!(provider_api.delete("").await.is_err());
                     provider_api.delete("second").await.unwrap();
-                    assert_eq!(provider_api.list().await.unwrap(), HashMap::from([(name.to_owned(), payload("updated"))]));
+                    assert_eq!(provider_api.list().await.unwrap(), HashMap::from([(name.to_owned(), shared::RecordPayload { timestamp: 2, ..payload("updated") })]));
                     provider_api.delete("second").await.unwrap();
                 } => {},
             }
@@ -593,7 +683,7 @@ mod tests {
             let key = kad::RecordKey::new(&shared::Provider::key(name));
             let removed_key = kad::RecordKey::new(&shared::Provider::key("second"));
             let store = provider.swarm.behaviour_mut().rpws_kad.store_mut();
-            assert!(store.try_get(&removed_key).unwrap().is_none());
+            assert!(super::super::records::state(store, &removed_key, &provider.secret).unwrap().unwrap().version().1);
             assert!(store.try_provided().unwrap().iter().all(|record| record.key != removed_key));
             let index = provider
                 .swarm
@@ -640,7 +730,7 @@ mod tests {
                 _ = &mut provider_server => panic!("provider API stopped"),
                 _ = &mut seeker_server => panic!("seeker API stopped"),
                 _ = async {
-                    assert_eq!(seeker_api.get(name).await.unwrap(), Some(payload("updated")));
+                    assert_eq!(seeker_api.get(name).await.unwrap(), Some(shared::RecordPayload { timestamp: 2, ..payload("updated") }));
                     assert!(seeker_api.get("missing").await.unwrap().is_none());
                 } => {},
             }
@@ -833,6 +923,19 @@ mod tests {
                 .filter_map(|entry| entry.decode(&provider.secret))
                 .any(|(name, payload)| name == "browser account"
                     && payload.password == "browser-password")
+        );
+        assert!(
+            entries
+                .iter()
+                .filter_map(|entry| entry.decode_state(&provider.secret))
+                .any(|(name, state)| name == "daemon account" && state.version().1)
+        );
+        assert!(
+            entries
+                .iter()
+                .filter_map(|entry| entry.decode(&provider.secret))
+                .any(|(name, payload)| name == "second account"
+                    && payload.password == "recreated-password")
         );
     }
 

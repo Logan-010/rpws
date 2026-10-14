@@ -37,19 +37,19 @@ pub fn merge(
     key: &[u8; 32],
     entries: Vec<shared::sync::Entry>,
 ) -> color_eyre::Result<u32> {
-    let mut timestamps: HashMap<_, _> = snapshot(swarm, key)
+    let mut versions: HashMap<_, _> = snapshot(swarm, key)
         .iter()
-        .filter_map(|e| e.decode(key))
-        .map(|(name, p)| (name, p.timestamp))
+        .filter_map(|e| e.decode_state(key))
+        .map(|(name, state)| (name, state.version()))
         .collect();
     let mut count = 0;
     for entry in entries {
-        let Some((name, payload)) = entry.decode(key) else {
+        let Some((name, state)) = entry.decode_state(key) else {
             continue;
         };
-        if timestamps
+        if versions
             .get(&name)
-            .is_some_and(|time| *time >= payload.timestamp)
+            .is_some_and(|version| *version >= state.version())
         {
             continue;
         }
@@ -60,8 +60,10 @@ pub fn merge(
                 .store_mut()
                 .put(kad::Record::new(record_key, value))?;
         }
-        timestamps.insert(name, payload.timestamp);
-        count += 1;
+        versions.insert(name, state.version());
+        if !state.version().1 {
+            count += 1;
+        }
     }
     Ok(count)
 }
