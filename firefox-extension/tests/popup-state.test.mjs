@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { JSDOM } from 'jsdom';
+import Fuse from 'fuse.js';
 
 const html = await readFile(new URL('../popup.html', import.meta.url), 'utf8');
-const source = (await readFile(new URL('../src/popup.js', import.meta.url), 'utf8')).replace("import './style.css';", '');
+const source = (await readFile(new URL('../src/popup.js', import.meta.url), 'utf8'))
+  .replace("import './style.css';", '').replace("import Fuse from 'fuse.js';", '');
 const settle = async () => { for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0)); };
 
 function background(loaded = true) {
@@ -12,7 +14,8 @@ function background(loaded = true) {
   let state = null;
   let revision = 0;
   const entries = { 'Example <&"': { url: 'https://example.com', username: 'alice', password: 'secret', extra: 'notes', timestamp: 1000 } };
-  return { calls, runtime: { async sendMessage(message) {
+  const openedTabs = [];
+  return { calls, entries, openedTabs, tabs: { async create(tab) { openedTabs.push(structuredClone(tab)); } }, runtime: { async sendMessage(message) {
     message = structuredClone(message);
     calls.push(message.action);
     let data;
@@ -35,6 +38,13 @@ async function open(browser) {
   const dom = new JSDOM(html, { runScripts: 'outside-only', url: 'https://extension.test/popup.html' });
   const { window } = dom;
   window.browser = browser;
+  window.Fuse = Fuse;
+  window.copied = [];
+  Object.defineProperty(window.navigator, 'clipboard', { value: { async writeText(value) { window.copied.push(value); } } });
+  // jsdom does not implement native dialog top-layer behavior. Exercise our
+  // modal events and lifecycle using the browser-equivalent open attribute.
+  window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  window.HTMLDialogElement.prototype.close = function () { this.open = false; };
   window.scrollTo = (_, y) => { window.scrollY = y; };
   window.eval(source);
   await settle();
@@ -168,5 +178,91 @@ test('Refresh requests network sync before rereading the password cache', async 
     assert.ok(sync >= 0);
     assert.ok(browser.calls.indexOf('list') > sync);
     assert.match(popup.query('#status').textContent, /Vault synced/);
+  } finally { popup.close(); }
+});
+
+test('Open creates a new tab for the entry URL and stays disabled for empty URLs', async () => {
+  const browser = background();
+  browser.entries['No URL'] = { ...browser.entries['Example <&"'], url: '' };
+  const popup = await open(browser);
+  try {
+    await popup.click('[data-action="open"]');
+    assert.deepEqual(browser.openedTabs, [{ url: 'https://example.com/' }]);
+    const emptyUrlButton = [...popup.window.document.querySelectorAll('[data-action="open"]')].find((button) => button.dataset.name === 'No URL');
+    assert.equal(emptyUrlButton.disabled, true);
+    emptyUrlButton.click();
+    assert.equal(browser.openedTabs.length, 1);
+  } finally { popup.close(); }
+});
+
+test('copy picker copies original fields, masks passwords, supports keys, and survives reopening', async () => {
+  const browser = background();
+  const name = 'Example <&"';
+  browser.entries[name].extra = '\nMultiline\t🔑 notes\n';
+  let popup = await open(browser);
+  try {
+    await popup.click('[data-action="copy"]');
+    assert.equal(popup.query('#copy-dialog').open, true);
+    assert.equal(popup.query('#copy-dialog').textContent.includes('secret'), false);
+    assert.equal(popup.window.document.querySelectorAll('.copy-field').length, 6);
+    const dialog = popup.query('#copy-dialog');
+    dialog.dispatchEvent(new popup.window.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    assert.equal(popup.window.document.activeElement.dataset.field, 'url');
+    dialog.dispatchEvent(new popup.window.KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+    assert.equal(popup.window.document.activeElement.dataset.field, 'timestamp');
+    popup.close();
+    popup = await open(browser);
+    assert.equal(popup.query('#copy-dialog').open, true);
+    assert.equal(popup.window.document.activeElement.dataset.field, 'timestamp');
+    await popup.click('[data-field="extra"]');
+    assert.equal(popup.window.copied[0], '\nMultiline\t🔑 notes\n');
+    assert.equal(popup.query('#copy-dialog'), null);
+    assert.equal(popup.window.document.activeElement.dataset.action, 'copy');
+    for (const [field, value] of [
+      ['name', name], ['url', browser.entries[name].url], ['username', 'alice'],
+      ['password', 'secret'], ['timestamp', new Date(1000 * 1000).toLocaleString()],
+    ]) {
+      await popup.click('[data-action="copy"]');
+      await popup.click(`[data-field="${field}"]`);
+      assert.equal(popup.window.copied.at(-1), value);
+    }
+    await popup.click('[data-action="copy"]');
+    popup.query('#copy-dialog').dispatchEvent(new popup.window.Event('cancel', { cancelable: true }));
+    await settle();
+    assert.equal(popup.query('#copy-dialog'), null);
+    assert.equal(popup.window.document.activeElement.dataset.action, 'copy');
+  } finally { popup.close(); }
+});
+
+test('clipboard failures preserve the copy picker and show a retryable error', async () => {
+  const popup = await open(background());
+  try {
+    popup.window.navigator.clipboard.writeText = async () => { throw new Error('Clipboard unavailable'); };
+    await popup.click('[data-action="copy"]');
+    await popup.click('[data-field="password"]');
+    assert.equal(popup.query('#copy-dialog').open, true);
+    assert.match(popup.query('#copy-status').textContent, /Clipboard unavailable/);
+    assert.equal(popup.query('[data-field="password"]').disabled, false);
+  } finally { popup.close(); }
+});
+
+test('fuzzy search tolerates typos, ranks exact names first, searches notes, and excludes passwords', async () => {
+  const browser = background();
+  browser.entries.GitHub = { url: 'https://github.com', username: 'developer', password: 'uniquehiddenpassword', extra: 'development account', timestamp: 1 };
+  browser.entries.GitLab = { url: 'https://gitlab.com', username: 'builder', password: 'uniquehiddenpassword', extra: 'repository hosting', timestamp: 1 };
+  const popup = await open(browser);
+  try {
+    await popup.input('#search', 'githb');
+    assert.equal(popup.query('#entries h3').textContent, 'GitHub');
+    await popup.input('#search', 'gitlab');
+    assert.equal(popup.query('#entries h3').textContent, 'GitLab');
+    await popup.input('#search', 'repositry');
+    assert.equal(popup.query('#entries h3').textContent, 'GitLab');
+    await popup.input('#search', 'develper');
+    assert.equal(popup.query('#entries h3').textContent, 'GitHub');
+    await popup.input('#search', 'uniquehiddenpassword');
+    assert.equal(popup.query('#entries article'), null);
+    await popup.input('#search', '   ');
+    assert.equal(popup.window.document.querySelectorAll('#entries article').length, 3);
   } finally { popup.close(); }
 });

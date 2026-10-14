@@ -46,6 +46,15 @@ After UI-only edits, `npm run build:ui` reuses the generated WASM bindings.
   the previous vault's UI state and drafts.
 - Add, search, edit, reveal, copy, or remove passwords. Names remain fixed while
   editing. Removal affects local mappings; independent remote copies remain.
+- **Open** opens an entry's HTTP/HTTPS URL in a new tab. Entries without a URL
+  have this button disabled.
+- **Copy** opens a modal field picker for the name, URL, username, password,
+  notes, or formatted update time. Use Tab or arrow keys to choose a field,
+  Enter to copy, and Escape or Cancel to close. Passwords stay masked in the
+  picker; copying preserves the original field text, including multiline notes.
+- The search bar fuzzy-matches names, usernames, URLs, and notes, tolerates
+  small typos, and ranks the best matches first. Password contents are excluded
+  from search. Search text and an open copy picker survive popup reopening.
 - **Settings** lets you add, remove, or modify bootstrap addresses by editing
   the list. Saving it restarts the WASM API with the updated peers.
 - **Settings → Copy secret as base64** copies the current vault's secret for

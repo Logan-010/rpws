@@ -14,4 +14,6 @@
   .danger { @apply border border-white bg-black text-white hover:bg-white hover:text-black; }
   .hint { @apply text-xs leading-relaxed text-neutral-400; }
   .panel { @apply rounded-xl border border-neutral-800 bg-neutral-950 p-4; }
+  .copy-dialog { @apply m-auto max-h-[90vh] overflow-y-auto rounded-xl border border-neutral-700 bg-black p-5 text-white shadow-xl; width: calc(100% - 3rem); max-width: 380px; }
+  .copy-dialog::backdrop { background: rgb(0 0 0 / 80%); }
 }

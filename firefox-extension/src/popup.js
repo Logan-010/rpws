@@ -1,4 +1,5 @@
 import './style.css';
+import Fuse from 'fuse.js';
 
 const app = document.querySelector('#app');
 const status = document.querySelector('#status');
@@ -10,6 +11,8 @@ let hydrating = true;
 let uiRevision = 0;
 const initialUi = () => ({ view: 'setup', search: '', expanded: [], drafts: {}, scroll: 0 });
 let ui = initialUi();
+let searchIndex;
+let copyOpener = null;
 
 function remember() {
   if (hydrating) return;
@@ -28,6 +31,7 @@ function remember() {
   ui.expanded = [...expanded];
   ui.scroll = window.scrollY;
   const focused = document.activeElement;
+  if (focused.matches?.('#copy-dialog [data-field]')) ui.copyField = focused.dataset.field;
   ui.focus = app.contains(focused) && (focused.name || focused.id) ? {
     name: focused.name, id: focused.id,
     start: focused.selectionStart, end: focused.selectionEnd,
@@ -87,19 +91,24 @@ function notify(text, error = false) {
   status.className = `mx-6 mt-4 rounded-lg border p-3 text-sm ${error
     ? 'border-white bg-neutral-900 text-white font-semibold'
     : 'border-neutral-700 bg-neutral-950 text-neutral-200'}`;
+  const modalStatus = app.querySelector('#copy-status');
+  if (modalStatus) modalStatus.textContent = text;
 }
 
 async function run(task) {
   if (busy) return;
   busy = true;
-  document.querySelectorAll('button').forEach((button) => { button.disabled = true; });
+  const buttons = [...document.querySelectorAll('button')].filter((button) => !button.disabled);
+  buttons.forEach((button) => { button.disabled = true; });
   app.setAttribute('aria-busy', 'true');
   try { await task(); }
   catch (error) { notify(String(error?.message || error), true); }
   finally {
     busy = false;
     app.removeAttribute('aria-busy');
-    document.querySelectorAll('button').forEach((button) => { button.disabled = false; });
+    buttons.forEach((button) => { if (button.isConnected) button.disabled = false; });
+    if (copyOpener?.isConnected) copyOpener.focus();
+    copyOpener = null;
     remember();
   }
 }
@@ -137,19 +146,30 @@ function setup() {
 
 async function vault() {
   entries = await rpc('list');
+  searchIndex = new Fuse(Object.entries(entries).map(([name, record]) => ({ name, record })), {
+    keys: [
+      { name: 'name', weight: 0.5 },
+      { name: 'record.username', weight: 0.25 },
+      { name: 'record.url', weight: 0.2 },
+      { name: 'record.extra', weight: 0.05 },
+    ],
+    threshold: 0.4,
+    ignoreLocation: true,
+  });
   loaded = true;
   ui.view = 'vault';
   render(app, `<div class="mb-4 flex items-center justify-between"><h2 class="text-lg font-semibold">Passwords <span class="text-sm text-neutral-400">(${Object.keys(entries).length})</span></h2>
     <div class="flex gap-2"><button class="secondary" data-action="refresh">Refresh</button><button class="primary" data-action="add">Add</button></div></div>
-    <label class="mb-4"><span class="sr-only">Search passwords</span><input id="search" type="search" placeholder="Search name, username, or URL" autocomplete="off"></label>
+    <label class="mb-4"><span class="sr-only">Fuzzy search passwords</span><input id="search" type="search" placeholder="Fuzzy search names, usernames, URLs, or notes" autocomplete="off"></label>
     <div id="entries" class="space-y-3"></div>`);
   app.querySelector('#search').value = ui.search;
   renderEntries(ui.search);
 }
 
 function renderEntries(search) {
-  const filtered = Object.entries(entries).sort(([a], [b]) => a.localeCompare(b)).filter(([name, record]) =>
-    [name, record.username, record.url].some((value) => value.toLowerCase().includes(search.toLowerCase())));
+  const filtered = search.trim()
+    ? searchIndex.search(search.trim()).map(({ item }) => [item.name, item.record])
+    : Object.entries(entries).sort(([a], [b]) => a.localeCompare(b));
   render(document.querySelector('#entries'), filtered.length ? filtered.map(([name, record]) => `
     <article class="panel">
       <h3 class="break-words font-semibold">${escape(name)}</h3>
@@ -158,13 +178,73 @@ function renderEntries(search) {
       <details class="mt-3" data-name="${escape(name)}" ${ui.expanded.includes(name) ? 'open' : ''}><summary class="cursor-pointer text-sm text-neutral-300">Details</summary>
         <div class="mt-3 space-y-2">
           <label>Password<input type="password" value="${escape(record.password)}" readonly aria-label="Password for ${escape(name)}"></label>
-          <div class="flex gap-2"><button class="secondary" data-action="reveal">Show</button><button class="secondary" data-action="copy" data-name="${escape(name)}">Copy password</button></div>
+          <button class="secondary" data-action="reveal">Show</button>
           ${record.extra ? `<p class="whitespace-pre-wrap break-words text-sm text-neutral-300">${escape(record.extra)}</p>` : ''}
           <p class="hint">Updated ${escape(new Date(record.timestamp * 1000).toLocaleString())}</p>
         </div>
       </details>
-      <div class="mt-3 flex gap-2"><button class="secondary" data-action="edit" data-name="${escape(name)}">Edit</button><button class="danger" data-action="remove" data-name="${escape(name)}">Remove</button></div>
+      <div class="mt-3 flex flex-wrap gap-2"><button class="secondary" data-action="open" data-name="${escape(name)}" ${record.url.trim() ? '' : 'disabled'}>Open</button><button class="secondary" data-action="copy" data-name="${escape(name)}">Copy</button><button class="secondary" data-action="edit" data-name="${escape(name)}">Edit</button><button class="danger" data-action="remove" data-name="${escape(name)}">Remove</button></div>
     </article>`).join('') : `<div class="panel text-center text-sm text-neutral-400">${Object.keys(entries).length ? 'No matching passwords.' : 'Your vault is empty. Add your first password.'}</div>`);
+}
+
+function copyFields(name) {
+  const record = entries[name];
+  return [
+    { key: 'name', label: 'Name', value: name },
+    { key: 'url', label: 'URL', value: record.url },
+    { key: 'username', label: 'Username', value: record.username },
+    { key: 'password', label: 'Password', value: record.password },
+    { key: 'extra', label: 'Notes', value: record.extra },
+    { key: 'timestamp', label: 'Updated time', value: new Date(record.timestamp * 1000).toLocaleString() },
+  ];
+}
+
+function closeCopy() {
+  const name = ui.copyName;
+  delete ui.copyName;
+  delete ui.copyField;
+  const dialog = app.querySelector('#copy-dialog');
+  if (dialog?.open) dialog.close();
+  dialog?.remove();
+  const opener = [...app.querySelectorAll('[data-action="copy"]')].find((button) => button.dataset.name === name);
+  if (busy) copyOpener = opener;
+  else opener?.focus();
+  remember();
+}
+
+function openCopy(name) {
+  const selectedField = ui.copyName === name ? ui.copyField : 'name';
+  const dialog = document.createElement('dialog');
+  dialog.id = 'copy-dialog';
+  dialog.className = 'copy-dialog';
+  dialog.setAttribute('aria-labelledby', 'copy-title');
+  render(dialog, `<h2 id="copy-title" class="text-lg font-semibold">Copy to clipboard</h2>
+    <p class="hint mt-1 break-words">${escape(name)}</p>
+    <div class="mt-4 space-y-2">${copyFields(name).map((field) => `
+      <button class="copy-field secondary w-full text-left" data-action="copy-field" data-name="${escape(name)}" data-field="${field.key}">
+        <span class="block">Copy ${field.label}</span>
+        <span class="mt-1 block truncate text-xs text-neutral-400">${field.key === 'password' ? '••••••••' : escape(field.value || '(empty)')}</span>
+      </button>`).join('')}</div>
+    <p id="copy-status" class="mt-3 text-sm text-white" role="status" aria-live="polite"></p>
+    <button class="secondary mt-4 w-full" data-action="close-copy">Cancel</button>`);
+  ui.copyName = name;
+  app.append(dialog);
+  dialog.addEventListener('cancel', (event) => {
+    event.preventDefault();
+    if (!busy) closeCopy();
+  });
+  dialog.addEventListener('keydown', (event) => {
+    if (busy || !['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const fields = [...dialog.querySelectorAll('.copy-field')];
+    const index = fields.indexOf(document.activeElement);
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? fields.length - 1
+      : (index + (event.key === 'ArrowDown' ? 1 : -1) + fields.length) % fields.length;
+    fields[next].focus();
+  });
+  dialog.showModal();
+  const fields = [...dialog.querySelectorAll('.copy-field')];
+  (fields.find((button) => button.dataset.field === selectedField) || fields[0]).focus();
 }
 
 function editor(name) {
@@ -283,6 +363,8 @@ app.addEventListener('click', (event) => {
   if (action === 'remove') { confirmRemoval(name); remember(); return; }
   if (action === 'unload') { confirmUnload(); remember(); return; }
   if (action === 'import') { fileInput.click(); return; }
+  if (action === 'copy') { openCopy(name); remember(); return; }
+  if (action === 'close-copy') { closeCopy(); return; }
   run(async () => {
     if (action === 'cancel-unload') await settings();
     if (action === 'confirm-unload') {
@@ -304,7 +386,19 @@ app.addEventListener('click', (event) => {
       notify(`Vault synced. ${count} password${count === 1 ? '' : 's'} added or updated.`);
     }
     if (action === 'delete') { await rpc('delete', { name }); await vault(); notify('Password removed.'); }
-    if (action === 'copy') { await navigator.clipboard.writeText(entries[name].password); notify('Password copied.'); }
+    if (action === 'open') {
+      let url;
+      try { url = new URL(entries[name].url); } catch { throw new Error('This entry needs a valid URL to open.'); }
+      if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Use an http:// or https:// URL for this entry.');
+      await browser.tabs.create({ url: url.href });
+    }
+    if (action === 'copy-field') {
+      const field = copyFields(name).find((field) => field.key === button.dataset.field);
+      if (!field) throw new Error('Unknown clipboard field.');
+      await navigator.clipboard.writeText(field.value);
+      closeCopy();
+      notify(`${field.label} copied.`);
+    }
     if (action === 'copy-secret') {
       await navigator.clipboard.writeText(await rpc('secret'));
       notify('Vault secret copied as base64.');
@@ -371,7 +465,9 @@ run(async () => {
     status.textContent = ui.notice.text;
     status.className = ui.notice.className;
   }
-  if (focus) {
+  if (ui.view === 'vault' && ui.copyName && Object.hasOwn(entries, ui.copyName)) openCopy(ui.copyName);
+  else delete ui.copyName;
+  if (focus && !ui.copyName) {
     const field = [...app.querySelectorAll('input, textarea, select')].find((element) =>
       focus.name ? element.name === focus.name : element.id === focus.id);
     if (field && !field.disabled) {
