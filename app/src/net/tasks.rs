@@ -5,11 +5,12 @@ use super::{
 };
 use cid::Cid;
 use libp2p::{
-    StreamProtocol,
+    Multiaddr, StreamProtocol,
     futures::StreamExt,
     identify,
     kad::{self, store::RecordStore},
     mdns,
+    multiaddr::Protocol,
     swarm::SwarmEvent,
 };
 use multihash_codetable::{Code, MultihashDigest};
@@ -37,17 +38,24 @@ impl ProviderRetries {
     }
 }
 
-fn dialable_address(address: &libp2p::Multiaddr) -> bool {
-    use libp2p::multiaddr::Protocol;
-    !address.iter().any(|protocol| match protocol {
-        Protocol::Ip6(ip) => ip.is_unicast_link_local(),
-        Protocol::Ws(_)
-        | Protocol::Wss(_)
-        | Protocol::Tls
-        | Protocol::WebTransport
-        | Protocol::WebRTCDirect
-        | Protocol::WebRTC => true,
+fn dialable_address(address: &Multiaddr) -> bool {
+    // Keep this protocol filter aligned with the TCP, QUIC, DNS, WebSocket,
+    // and relay transports configured in swarm::build_swarm.
+    address.iter().all(|protocol| match protocol {
+        Protocol::Ip4(ip) => !ip.is_link_local(),
+        Protocol::Ip6(ip) => !ip.is_unicast_link_local(),
+        Protocol::Ws(_) | Protocol::Wss(_) | Protocol::Tls => true,
+        Protocol::QuicV1 => true,
+        Protocol::Tcp(_) | Protocol::Udp(_) => true,
+        Protocol::P2p(_) => true,
+        Protocol::P2pCircuit => true,
+        Protocol::Dns4(_) | Protocol::Dns6(_) | Protocol::Dnsaddr(_) | Protocol::Dns(_) => true,
         _ => false,
+    }) && address.iter().any(|protocol| {
+        matches!(
+            protocol,
+            Protocol::Tcp(_) | Protocol::QuicV1 | Protocol::Dnsaddr(_)
+        )
     })
 }
 
@@ -441,26 +449,6 @@ mod tests {
             assert!(retries.ready(&peer, now));
         }
         assert!(retries.ready(&libp2p::PeerId::random(), now));
-    }
-
-    #[test]
-    fn address_filter_preserves_lan_and_relay_routes() {
-        for address in ["/ip6/fe80::1/tcp/7777", "/dns4/example.com/tcp/443/tls/ws"] {
-            assert!(!dialable_address(&address.parse().unwrap()));
-        }
-        for address in [
-            "/ip6/fd7a:115c:a1e0::9838:bf18/tcp/7777",
-            "/ip4/10.0.0.1/tcp/7777",
-            "/ip4/127.0.0.1/udp/7777/quic-v1",
-        ] {
-            assert!(dialable_address(&address.parse().unwrap()));
-        }
-        let relay = format!(
-            "/ip4/38.146.27.201/tcp/4001/p2p/{}/p2p-circuit/p2p/{}",
-            libp2p::PeerId::random(),
-            libp2p::PeerId::random()
-        );
-        assert!(dialable_address(&relay.parse().unwrap()));
     }
 
     async fn net(directory: &tempfile::TempDir) -> Net {

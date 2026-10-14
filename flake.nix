@@ -51,16 +51,21 @@
 
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
+            # Rust
             toolchain
+            rust-analyzer
 
+            # Deps
             pkg-config
             openssl
 
+            # Development
             git
-            just
-            bacon
 
-            rust-analyzer
+            # JavaScript / TypeScript
+            nodejs_26
+            typescript
+            typescript-language-server
           ];
 
           RUST_SRC_PATH = "${toolchain}/lib/rustlib/src/rust/library";

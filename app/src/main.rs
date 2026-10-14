@@ -3,14 +3,13 @@ mod config;
 mod net;
 mod ui;
 
-use std::{collections::HashMap, time::SystemTime};
-
 use clap::Parser;
 use cli::{Cli, Mode};
 use color_eyre::eyre::ContextCompat;
 use config::Config;
 use directories::ProjectDirs;
 use net::{Net, api::NetApi};
+use std::{collections::HashMap, time::SystemTime};
 use tokio::{fs, select, signal, task};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 

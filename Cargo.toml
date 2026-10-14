@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["libp2p-kad-redb", "shared", "app", "web"]
+ignore = ["firefox-extension", "chrome-extension"]
 
 [workspace.dependencies]
 # Internal
