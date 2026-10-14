@@ -140,7 +140,19 @@ pub(super) fn handle_shared(net: &mut Net, event: SwarmEvent<BehaviourEvent>) {
                 relays.connected(peer_id, address);
             }
         }
-        SwarmEvent::NewListenAddr { address, .. } => tracing::info!("Listening on {}", address),
+        SwarmEvent::NewListenAddr { mut address, .. } => {
+            let p = address.pop();
+
+            if let Some(Protocol::P2p(_)) = p {
+            } else if let Some(pr) = p {
+                address = address.with(pr);
+            }
+
+            tracing::info!(
+                "Listening on {}",
+                address.with(Protocol::P2p(*net.swarm.local_peer_id()))
+            );
+        }
         SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received {
             peer_id,
             info,

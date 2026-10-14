@@ -57,6 +57,10 @@ impl Default for Config {
                 .parse()
                 .expect("Valid multiaddr"),
             "/ip6/::/udp/7777/quic-v1".parse().expect("Valid multiaddr"),
+            "/ip4/127.0.0.1/tcp/7776/ws"
+                .parse()
+                .expect("Valid multiaddr"),
+            "/ip6/::1/tcp/7776/ws".parse().expect("Valid multiaddr"),
         ];
         listen_addrs.extend(
             bootstrap_addrs
