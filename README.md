@@ -7,6 +7,12 @@ Peers are then used to distribute encrypted and authenticated records (passwords
 
 All data sent over the network is encrypted and cannot directly reveal passwords to attackers observing traffic.
 
+# Preview
+
+| TUI | RPAWS (Chrome) | RPAWS (Firefox) |
+| --- | --- | --- |
+| ![TUI](previews/tui.png) | ![Chrome](previews/Chrome.png) | ![Firefox](previews/Firefox.png) |
+
 # Usage
 
 RPWS requires 2 components--a daemon and some sort of client. The `rpws` binary by default includes both of these.
