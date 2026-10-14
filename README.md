@@ -34,3 +34,5 @@ config if you'd like to share passwords with the server instead of creating anot
 The save is automatically saved to your browser, however it's recommended to back up the save to another location, which can
 be done from the settings of the extension.
 
+RPWS's core and TUI are built by hand and should be reliable and fully functional. However RPAWS (the browser extensions)
+were created with the assistance of AI (GPT 6.1 Sol) and a "perfect experience" is not guaranteed.
