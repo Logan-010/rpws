@@ -85,8 +85,8 @@ async function rpc(action, data = {}) {
 function notify(text, error = false) {
   status.textContent = text;
   status.className = `mx-6 mt-4 rounded-lg border p-3 text-sm ${error
-    ? 'border-rose-900 bg-rose-950 text-rose-200'
-    : 'border-indigo-800 bg-indigo-950 text-indigo-200'}`;
+    ? 'border-white bg-neutral-900 text-white font-semibold'
+    : 'border-neutral-700 bg-neutral-950 text-neutral-200'}`;
 }
 
 async function run(task) {
@@ -115,10 +115,10 @@ function setup() {
   loaded = false;
   entries = {};
   render(app, `<section class="space-y-5">
-    <div><h2 class="text-lg font-semibold">Welcome to your vault</h2><p class="mt-2 text-sm text-slate-400">Add your bootstrap peers to create a save. It will be loaded automatically next time.</p></div>
+    <div><h2 class="text-lg font-semibold">Welcome to your vault</h2><p class="mt-2 text-sm text-neutral-400">Add your bootstrap peers to create a save. It will be loaded automatically next time.</p></div>
     <form id="setup-form" class="space-y-4">
       <label>Vault secret
-        <select id="secret-mode" name="secretMode" class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100">
+        <select id="secret-mode" name="secretMode" class="mt-1 w-full rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm text-white">
           <option value="generate">Generate a new secret</option>
           <option value="import">Import an existing secret (base64)</option>
         </select>
@@ -129,7 +129,7 @@ function setup() {
       </label>
       ${addressField()}<button class="primary w-full" type="submit">Create vault</button>
     </form>
-    <div class="border-t border-slate-800 pt-4"><p class="hint mb-3">Already have an RPWS save?</p><button class="secondary w-full" data-action="import">Import save</button></div>
+    <div class="border-t border-neutral-800 pt-4"><p class="hint mb-3">Already have an RPWS save?</p><button class="secondary w-full" data-action="import">Import save</button></div>
   </section>`);
   restoreDraft('setup-form');
   updateSecretField();
@@ -139,7 +139,7 @@ async function vault() {
   entries = await rpc('list');
   loaded = true;
   ui.view = 'vault';
-  render(app, `<div class="mb-4 flex items-center justify-between"><h2 class="text-lg font-semibold">Passwords <span class="text-sm text-slate-400">(${Object.keys(entries).length})</span></h2>
+  render(app, `<div class="mb-4 flex items-center justify-between"><h2 class="text-lg font-semibold">Passwords <span class="text-sm text-neutral-400">(${Object.keys(entries).length})</span></h2>
     <div class="flex gap-2"><button class="secondary" data-action="refresh">Refresh</button><button class="primary" data-action="add">Add</button></div></div>
     <label class="mb-4"><span class="sr-only">Search passwords</span><input id="search" type="search" placeholder="Search name, username, or URL" autocomplete="off"></label>
     <div id="entries" class="space-y-3"></div>`);
@@ -153,18 +153,18 @@ function renderEntries(search) {
   render(document.querySelector('#entries'), filtered.length ? filtered.map(([name, record]) => `
     <article class="panel">
       <h3 class="break-words font-semibold">${escape(name)}</h3>
-      <p class="mt-1 break-words text-sm text-slate-400">${escape(record.username || 'No username')}</p>
-      ${record.url ? `<p class="mt-1 break-words text-xs text-indigo-300">${escape(record.url)}</p>` : ''}
-      <details class="mt-3" data-name="${escape(name)}" ${ui.expanded.includes(name) ? 'open' : ''}><summary class="cursor-pointer text-sm text-slate-300">Details</summary>
+      <p class="mt-1 break-words text-sm text-neutral-400">${escape(record.username || 'No username')}</p>
+      ${record.url ? `<p class="mt-1 break-words text-xs text-neutral-300">${escape(record.url)}</p>` : ''}
+      <details class="mt-3" data-name="${escape(name)}" ${ui.expanded.includes(name) ? 'open' : ''}><summary class="cursor-pointer text-sm text-neutral-300">Details</summary>
         <div class="mt-3 space-y-2">
           <label>Password<input type="password" value="${escape(record.password)}" readonly aria-label="Password for ${escape(name)}"></label>
           <div class="flex gap-2"><button class="secondary" data-action="reveal">Show</button><button class="secondary" data-action="copy" data-name="${escape(name)}">Copy password</button></div>
-          ${record.extra ? `<p class="whitespace-pre-wrap break-words text-sm text-slate-300">${escape(record.extra)}</p>` : ''}
+          ${record.extra ? `<p class="whitespace-pre-wrap break-words text-sm text-neutral-300">${escape(record.extra)}</p>` : ''}
           <p class="hint">Updated ${escape(new Date(record.timestamp * 1000).toLocaleString())}</p>
         </div>
       </details>
       <div class="mt-3 flex gap-2"><button class="secondary" data-action="edit" data-name="${escape(name)}">Edit</button><button class="danger" data-action="remove" data-name="${escape(name)}">Remove</button></div>
-    </article>`).join('') : `<div class="panel text-center text-sm text-slate-400">${Object.keys(entries).length ? 'No matching passwords.' : 'Your vault is empty. Add your first password.'}</div>`);
+    </article>`).join('') : `<div class="panel text-center text-sm text-neutral-400">${Object.keys(entries).length ? 'No matching passwords.' : 'Your vault is empty. Add your first password.'}</div>`);
 }
 
 function editor(name) {
@@ -208,8 +208,8 @@ async function settings() {
 function confirmUnload() {
   ui.view = 'unload';
   render(app, `<section class="panel space-y-4"><h2 class="text-lg font-semibold">Unload the current save?</h2>
-    <p class="text-sm text-rose-300">Unsaved data will be lost. This also removes the locally cached save, including your identity, secret, and cached passwords.</p>
-    <p class="text-sm text-slate-400">Export a save first to keep a backup. You will return to setup and can create or import a save again.</p>
+    <p class="text-sm font-semibold text-white">Unsaved data will be lost. This also removes the locally cached save, including your identity, secret, and cached passwords.</p>
+    <p class="text-sm text-neutral-400">Export a save first to keep a backup. You will return to setup and can create or import a save again.</p>
     <div class="flex flex-wrap gap-2"><button class="secondary" data-action="export">Export save</button><button class="danger" data-action="confirm-unload">Unload save</button><button class="secondary" data-action="cancel-unload">Cancel</button></div></section>`);
 }
 
@@ -217,7 +217,7 @@ function confirmRemoval(name) {
   ui.view = 'remove';
   ui.removeName = name;
   render(app, `<section class="panel space-y-4"><h2 class="text-lg font-semibold">Remove ${escape(name)}?</h2>
-    <p class="text-sm text-slate-400">This removes the local name mapping and stops advertising it. Copies on other peers are not deleted.</p>
+    <p class="text-sm text-neutral-400">This removes the local name mapping and stops advertising it. Copies on other peers are not deleted.</p>
     <div class="flex gap-2"><button class="danger" data-action="delete" data-name="${escape(name)}">Remove password</button><button class="secondary" data-action="back">Cancel</button></div></section>`);
 }
 
@@ -326,7 +326,7 @@ function confirmImport(name, bytes) {
   ui.view = 'import';
   ui.pendingImport = { name, bytes };
   render(app, `<section class="panel space-y-4"><h2 class="text-lg font-semibold">Import ${escape(name)}?</h2>
-    <p class="text-sm text-slate-400">${loaded ? 'This replaces your current vault. Export a backup from Settings first if needed.' : 'This loads the identity, peers, and cached passwords from the save.'}</p>
+    <p class="text-sm text-neutral-400">${loaded ? 'This replaces your current vault. Export a backup from Settings first if needed.' : 'This loads the identity, peers, and cached passwords from the save.'}</p>
     <div class="flex gap-2"><button id="confirm-import" class="primary">Import save</button><button class="secondary" data-action="back">Cancel</button></div></section>`);
   document.querySelector('#confirm-import').addEventListener('click', () => run(async () => {
     await rpc('import', { bytes });

@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "name": "RPWS",
+  "name": "RPAWS",
   "version": "0.1.0",
   "description": "A P2P password manager powered by the RPWS WASM API.",
   "browser_specific_settings": {
@@ -10,8 +10,10 @@
     }
   },
   "permissions": ["storage", "clipboardWrite", "<all_urls>"],
+  "icons": { "256": "icon.png" },
   "browser_action": {
-    "default_title": "RPWS passwords",
+    "default_title": "RPAWS passwords",
+    "default_icon": "icon.png",
     "default_popup": "popup.html"
   },
   "background": { "page": "background.html", "persistent": true },
