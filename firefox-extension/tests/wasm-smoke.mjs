@@ -46,7 +46,12 @@ try {
   assert.deepEqual(JSON.parse(await wasm.list_json()), {});
   assert.deepEqual(wasm.view_bootstrap_addrs(deletedSnapshot), [addr]);
   assert.equal(await wasm.get(name), undefined);
-  await assert.rejects(wasm.sync(), (error) => String(error).includes('Vault sync failed'));
+  await assert.rejects(wasm.sync(), (error) => {
+    const message = String(error);
+    assert.match(message, /Vault sync failed/);
+    assert.ok(message.includes(addr.split('/p2p/')[0]), 'Dial error should include the failing WebSocket address');
+    return true;
+  });
   assert.deepEqual(JSON.parse(await wasm.list_json()), {});
   await wasm.put_json(name, JSON.stringify({ ...payload, timestamp: 1 }));
   const recreated = JSON.parse(await wasm.list_json())[name];

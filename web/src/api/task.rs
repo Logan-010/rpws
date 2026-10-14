@@ -73,6 +73,14 @@ pub async fn task(
             },
         };
         match event {
+            SwarmEvent::OutgoingConnectionError {
+                connection_id,
+                peer_id,
+                error,
+            } => {
+                tracing::warn!("WebSocket dial failed for {peer_id:?}: {error}");
+                sync.dial_failed(connection_id, peer_id, &error);
+            }
             SwarmEvent::Behaviour(BehaviourEvent::Sync(event)) => {
                 sync.handle(&mut swarm, &secret, event)
             }

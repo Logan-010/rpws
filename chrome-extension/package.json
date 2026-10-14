@@ -1,0 +1,22 @@
+{
+  "name": "rpws-chrome-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:wasm": "wasm-pack build ../web --target web --out-dir ../chrome-extension/wasm --out-name web --no-opt",
+    "build:ui": "vite build",
+    "build": "npm run build:wasm && npm run build:ui",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.0",
+    "jsdom": "^26.1.0",
+    "tailwindcss": "^4.1.0",
+    "vite": "^7.0.0",
+    "wasm-pack": "0.13.1"
+  },
+  "dependencies": {
+    "fuse.js": "^7.5.0"
+  }
+}

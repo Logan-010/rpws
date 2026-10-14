@@ -5,6 +5,7 @@ use libp2p::{
     futures::channel::oneshot,
     kad::{self, store::RecordStore},
     request_response::{Event, Message, OutboundRequestId},
+    swarm::{ConnectionId, DialError},
 };
 use std::collections::{HashMap, HashSet};
 
@@ -19,6 +20,7 @@ pub struct Sync {
     received: u32,
     succeeded: bool,
     error: Option<String>,
+    dial_errors: HashMap<ConnectionId, String>,
 }
 
 pub fn snapshot(swarm: &mut Swarm<Behaviour>, key: &[u8; 32]) -> Vec<shared::sync::Entry> {
@@ -69,6 +71,21 @@ pub fn merge(
 }
 
 impl Sync {
+    pub fn dial_failed(
+        &mut self,
+        connection: ConnectionId,
+        peer: Option<PeerId>,
+        error: &DialError,
+    ) {
+        // Request-response reports only DialFailure, dropping the transport
+        // error. Retain the swarm's details for the corresponding failure.
+        if peer.is_some_and(|peer| self.pending.values().any(|pending| *pending == peer))
+            && !matches!(error, DialError::DialPeerConditionFalse(_))
+        {
+            self.dial_errors.insert(connection, error.to_string());
+        }
+    }
+
     pub fn start(&mut self, swarm: &mut Swarm<Behaviour>, key: &[u8; 32], reply: Option<Reply>) {
         if let Some(reply) = reply {
             self.reply = Some(reply);
@@ -104,6 +121,7 @@ impl Sync {
         if !self.pending.is_empty() {
             return;
         }
+        self.dial_errors.clear();
         if let Some(reply) = self.reply.take() {
             let result = if self.succeeded || self.error.is_none() {
                 Ok(self.received)
@@ -164,11 +182,21 @@ impl Sync {
                 self.finish();
             }
             Event::OutboundFailure {
-                request_id, error, ..
+                request_id,
+                connection_id,
+                peer,
+                error,
             } => {
-                self.pending.remove(&request_id);
+                if self.pending.remove(&request_id).is_none() {
+                    return;
+                }
+                let detail = self
+                    .dial_errors
+                    .remove(&connection_id)
+                    .map(|detail| format!(": {detail}"))
+                    .unwrap_or_default();
                 self.error = Some(format!(
-                    "{error}. Check the WebSocket bootstrap address and that the daemon supports vault sync"
+                    "Peer {peer}: {error}{detail}. Check the WebSocket bootstrap address and that the daemon supports vault sync"
                 ));
                 self.finish();
             }

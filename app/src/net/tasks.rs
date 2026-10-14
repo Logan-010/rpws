@@ -828,8 +828,12 @@ mod tests {
             }
         }
         .with(Protocol::P2p(*provider.swarm.local_peer_id()));
-        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../firefox-extension/tests/net-sync.mjs");
+        let script = std::env::var_os("RPWS_BROWSER_SYNC_SCRIPT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../firefox-extension/tests/net-sync.mjs")
+            });
         // Reproduce the previous browser Save's postcard layout so the real
         // WASM loader also proves that direct-key caches migrate without loss.
         #[derive(serde::Serialize)]

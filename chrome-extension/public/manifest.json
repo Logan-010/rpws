@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "RPAWS",
+  "version": "0.1.0",
+  "minimum_chrome_version": "116",
+  "description": "A P2P password manager powered by the RPWS WASM API.",
+  "permissions": ["storage", "clipboardWrite", "tabs", "scripting", "offscreen"],
+  "host_permissions": ["<all_urls>"],
+  "commands": {
+    "autofill": {
+      "suggested_key": { "default": "Ctrl+Shift+L", "mac": "Command+Shift+L" },
+      "description": "Autofill the matching RPWS login"
+    }
+  },
+  "icons": { "256": "icon.png" },
+  "action": {
+    "default_title": "RPAWS passwords",
+    "default_icon": "icon.png",
+    "default_popup": "popup.html"
+  },
+  "background": { "service_worker": "service-worker.js", "type": "module" },
+  "content_scripts": [{
+    "matches": ["http://*/*", "https://*/*"],
+    "js": ["autofill.js"],
+    "run_at": "document_idle",
+    "all_frames": false
+  }],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; connect-src 'self' ws: wss:"
+  }
+}
