@@ -11,7 +11,7 @@ All data sent over the network is encrypted and cannot directly reveal passwords
 
 | TUI | RPAWS (Chrome) | RPAWS (Firefox) |
 | --- | --- | --- |
-| ![TUI](previews/tui.png) | ![Chrome](previews/Chrome.png) | ![Firefox](previews/Firefox.png) |
+| ![TUI](previews/tui.jpg) | ![Chrome](previews/Chrome.jpg) | ![Firefox](previews/Firefox.jpg) |
 
 # Usage
 
