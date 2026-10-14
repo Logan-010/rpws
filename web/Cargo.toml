@@ -8,6 +8,11 @@ description = "WASM interface for RPWS"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+# Rust emits these instructions for wasm32-unknown-unknown. Enable them in
+# wasm-opt too so both extensions can optimize their release builds.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-O", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]
+
 [dependencies]
 color-eyre = "0.6.5"
 gloo-timers = { version = "0.3.0", features = ["futures"] }
